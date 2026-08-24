@@ -1,0 +1,930 @@
+--- a/src/video/offscreen/SDL_offscreenvideo.c
++++ b/src/video/offscreen/SDL_offscreenvideo.c
+@@ -36,6 +36,8 @@
+ #include "SDL_offscreenevents_c.h"
+ #include "SDL_offscreenframebuffer_c.h"
+ #include "SDL_offscreenopengles.h"
++#include "SDL_mister_ddr.h"
++#include "SDL_mister_glue.h"
+ #include "SDL_offscreenwindow.h"
+ 
+ #define OFFSCREENVID_DRIVER_NAME "offscreen"
+@@ -108,6 +110,14 @@
+     mode.w = 1024;
+     mode.h = 768;
+     mode.refresh_rate = 0;
++
++    /* MiSTer: report the FPGA's scanout geometry as the desktop, so a
++       fullscreen game lands exactly on the buffer we can present. */
++    if (MISTER_DDR_ScanoutForced()) {
++        mode.w = MISTER_DDR_ScanoutWidth();
++        mode.h = MISTER_DDR_ScanoutHeight();
++        mode.refresh_rate = 60;
++    }
+     mode.driverdata = NULL;
+     if (SDL_AddBasicVideoDisplay(&mode) < 0) {
+         return -1;
+@@ -127,6 +137,8 @@
+ 
+ void OFFSCREEN_VideoQuit(_THIS)
+ {
++    MISTER_GLUE_Unload();
++    MISTER_DDR_Quit();
+ }
+ 
+ #endif /* SDL_VIDEO_DRIVER_OFFSCREEN */
+--- a/src/video/offscreen/SDL_offscreenopengles.c
++++ b/src/video/offscreen/SDL_offscreenopengles.c
+@@ -25,6 +25,8 @@
+ #include "SDL_offscreenopengles.h"
+ #include "SDL_offscreenvideo.h"
+ #include "SDL_offscreenwindow.h"
++#include "SDL_mister_ddr.h"
++#include "SDL_mister_glue.h"
+ 
+ /* EGL implementation of SDL OpenGL support */
+ 
+@@ -46,6 +48,17 @@
+         return ret;
+     }
+ 
++    /* MiSTer: the scanout is RGB565, so a 16-bit framebuffer both halves
++       llvmpipe's blend/copy bandwidth and lets glReadPixels hand us the
++       scanout format directly. Opt-in: SDL_MISTER_565=1. */
++    if (SDL_GetHintBoolean("SDL_MISTER_565", SDL_FALSE)) {
++        _this->gl_config.red_size = 5;
++        _this->gl_config.green_size = 6;
++        _this->gl_config.blue_size = 5;
++        _this->gl_config.alpha_size = 0;
++        _this->gl_config.buffer_size = 16;
++    }
++
+     ret = SDL_EGL_ChooseConfig(_this);
+     if (ret != 0) {
+         return ret;
+@@ -74,10 +87,32 @@
+     }
+ }
+ 
++
++void *OFFSCREEN_GLES_GetProcAddress(_THIS, const char *proc)
++{
++    void *real, *glued;
++
++    /* Deferred until the engine actually asks for GL: by then EGL is loaded and
++       the glue can resolve the Mesa entry points it falls back to. */
++    MISTER_GLUE_Load(_this);
++
++    real  = SDL_EGL_GetProcAddress(_this, proc);
++    glued = MISTER_GLUE_Resolve(proc, real);   /* fabric path, or `real` */
++    return MISTER_DDR_WrapProc(proc, glued);   /* profiling wrapper on top */
++}
++
+ int OFFSCREEN_GLES_SwapWindow(_THIS, SDL_Window *window)
+ {
+     OFFSCREEN_Window *offscreen_wind = window->driverdata;
+ 
++    /* MiSTer: the FPGA scans video out of DDR3, so "presenting" means getting the
++       finished frame there. When the glue is driving the fabric it has already
++       composited and published the frame, and reading the GL framebuffer back
++       would both cost the frame time we just saved and overwrite its output. */
++    if (!MISTER_GLUE_Present()) {
++        MISTER_DDR_PresentGL(_this, window->w, window->h);
++    }
++
+     return SDL_EGL_SwapBuffers(_this, offscreen_wind->egl_surface);
+ }
+ 
+--- a/src/video/offscreen/SDL_offscreenopengles.h
++++ b/src/video/offscreen/SDL_offscreenopengles.h
+@@ -28,7 +28,6 @@
+ #include "../SDL_sysvideo.h"
+ #include "../SDL_egl_c.h"
+ 
+-#define OFFSCREEN_GLES_GetProcAddress  SDL_EGL_GetProcAddress
+ #define OFFSCREEN_GLES_UnloadLibrary   SDL_EGL_UnloadLibrary
+ #define OFFSCREEN_GLES_GetSwapInterval SDL_EGL_GetSwapInterval
+ #define OFFSCREEN_GLES_SetSwapInterval SDL_EGL_SetSwapInterval
+@@ -38,6 +37,7 @@
+ extern SDL_GLContext OFFSCREEN_GLES_CreateContext(_THIS, SDL_Window *window);
+ extern int OFFSCREEN_GLES_MakeCurrent(_THIS, SDL_Window *window, SDL_GLContext context);
+ extern int OFFSCREEN_GLES_SwapWindow(_THIS, SDL_Window *window);
++extern void *OFFSCREEN_GLES_GetProcAddress(_THIS, const char *proc);
+ 
+ #endif /* SDL_VIDEO_DRIVER_OFFSCREEN && SDL_VIDEO_OPENGL_EGL */
+ 
+--- a/src/video/offscreen/SDL_mister_glue.h
++++ b/src/video/offscreen/SDL_mister_glue.h
+@@ -0,0 +1,24 @@
++#ifndef SDL_mister_glue_h_
++#define SDL_mister_glue_h_
++
++#include "../SDL_sysvideo.h"
++#include "mister_glue_abi.h"
++
++#if defined(SDL_VIDEO_DRIVER_OFFSCREEN) && defined(SDL_VIDEO_OPENGL_EGL) && defined(__LINUX__)
++
++extern void MISTER_GLUE_Load(_THIS);
++extern void *MISTER_GLUE_Resolve(const char *proc, void *real);
++extern int MISTER_GLUE_Present(void);
++extern void MISTER_GLUE_Unload(void);
++extern SDL_bool MISTER_GLUE_Active(void);
++
++#else
++
++#define MISTER_GLUE_Load(_this)          do { } while (0)
++#define MISTER_GLUE_Resolve(proc, real)  (real)
++#define MISTER_GLUE_Present()            0
++#define MISTER_GLUE_Unload()             do { } while (0)
++#define MISTER_GLUE_Active()             SDL_FALSE
++
++#endif
++#endif /* SDL_mister_glue_h_ */
+--- a/src/video/offscreen/SDL_mister_glue.c
++++ b/src/video/offscreen/SDL_mister_glue.c
+@@ -0,0 +1,137 @@
++/*
++  Optional bridge to libmisterglue.so — the module that turns Godot's GLES2 draw
++  calls into FPGA fabric commands. Loaded only when SDL_MISTER_GLUE names it (or
++  SDL_MISTER_GLUE=1 for the default path), so a stock SDL keeps working.
++*/
++#include "../../SDL_internal.h"
++
++#if defined(SDL_VIDEO_DRIVER_OFFSCREEN) && defined(SDL_VIDEO_OPENGL_EGL) && defined(__LINUX__)
++
++#include "SDL_mister_glue.h"
++#include "SDL_mister_ddr.h"
++#include "../SDL_egl_c.h"
++
++#include <dlfcn.h>
++
++static struct
++{
++    void *handle;
++    const MisterGlue *glue;
++    SDL_bool tried;
++    SDL_bool active;
++    SDL_VideoDevice *device;
++} mglue;
++
++static void *MISTER_GLUE_RealProc(const char *proc)
++{
++    return mglue.device ? SDL_EGL_GetProcAddress(mglue.device, proc) : NULL;
++}
++
++static void MISTER_GLUE_Log(const char *msg)
++{
++    SDL_Log("%s", msg);
++}
++
++SDL_bool MISTER_GLUE_Active(void)
++{
++    return mglue.active;
++}
++
++void MISTER_GLUE_Load(_THIS)
++{
++    const char *want;
++    const MisterGlue *(*entry)(void);
++    MisterGlueHost host;
++
++    if (mglue.tried) {
++        return;
++    }
++    mglue.tried = SDL_TRUE;
++
++    want = SDL_getenv("SDL_MISTER_GLUE");
++    if (!want || !*want || SDL_strcmp(want, "0") == 0) {
++        return;
++    }
++    if (SDL_strcmp(want, "1") == 0) {
++        want = "libmisterglue.so";
++    }
++
++    mglue.handle = dlopen(want, RTLD_NOW | RTLD_LOCAL);
++    if (!mglue.handle) {
++        SDL_Log("MiSTer glue: dlopen(%s) failed: %s", want, dlerror());
++        return;
++    }
++    *(void **)&entry = dlsym(mglue.handle, MISTER_GLUE_ENTRY);
++    if (!entry) {
++        SDL_Log("MiSTer glue: %s not found in %s", MISTER_GLUE_ENTRY, want);
++        dlclose(mglue.handle);
++        mglue.handle = NULL;
++        return;
++    }
++
++    mglue.glue = entry();
++    if (!mglue.glue || mglue.glue->abi_version != MISTER_GLUE_ABI_VERSION) {
++        SDL_Log("MiSTer glue: ABI mismatch (module %u, SDL %u)",
++                mglue.glue ? mglue.glue->abi_version : 0u, MISTER_GLUE_ABI_VERSION);
++        dlclose(mglue.handle);
++        mglue.handle = NULL;
++        mglue.glue = NULL;
++        return;
++    }
++
++    mglue.device = _this;
++
++    SDL_zero(host);
++    host.abi_version = MISTER_GLUE_ABI_VERSION;
++    host.get_real_proc = MISTER_GLUE_RealProc;
++    host.scanout_w = MISTER_DDR_ScanoutWidth();
++    host.scanout_h = MISTER_DDR_ScanoutHeight();
++    host.log = MISTER_GLUE_Log;
++
++    if (mglue.glue->init(&host) != 0) {
++        SDL_Log("MiSTer glue: init failed; staying on Mesa");
++        mglue.glue = NULL;
++        dlclose(mglue.handle);
++        mglue.handle = NULL;
++        return;
++    }
++
++    mglue.active = SDL_TRUE;
++    SDL_Log("MiSTer glue: loaded %s (scanout %dx%d)", want, host.scanout_w, host.scanout_h);
++}
++
++void *MISTER_GLUE_Resolve(const char *proc, void *real)
++{
++    void *ours;
++
++    if (!mglue.active || !proc) {
++        return real;
++    }
++    ours = mglue.glue->resolve(proc);
++    return ours ? ours : real;
++}
++
++int MISTER_GLUE_Present(void)
++{
++    if (!mglue.active) {
++        return 0;
++    }
++    return mglue.glue->present();
++}
++
++void MISTER_GLUE_Unload(void)
++{
++    if (mglue.glue) {
++        mglue.glue->shutdown();
++        mglue.glue = NULL;
++    }
++    if (mglue.handle) {
++        dlclose(mglue.handle);
++        mglue.handle = NULL;
++    }
++    mglue.active = SDL_FALSE;
++    mglue.tried = SDL_FALSE;
++    mglue.device = NULL;
++}
++
++#endif /* SDL_VIDEO_DRIVER_OFFSCREEN && SDL_VIDEO_OPENGL_EGL && __LINUX__ */
+--- a/src/video/offscreen/SDL_mister_ddr.h
++++ b/src/video/offscreen/SDL_mister_ddr.h
+@@ -0,0 +1,47 @@
++/*
++  MiSTer FPGA DDR3 presentation for SDL's offscreen video driver.
++
++  MiSTer has no DRM/KMS device and no display server: the FPGA scans video out
++  of DDR3 itself. The offscreen driver renders through Mesa (llvmpipe) into an
++  EGL pbuffer, and this module copies each finished frame into the DDR3
++  double-buffer that the FPGA core's video reader polls.
++
++  DDR layout (physical 0x3A000000) is the OpenBOR_7533 core's layout:
++    +0x000000  control word: frame_counter[31:2] | active_buf[1:0]
++    +0x000040  video buffer 0  (320x240 RGB565)
++    +0x040040  video buffer 1  (320x240 RGB565)
++
++  Enabled with SDL_MISTER_DDR=1; inert otherwise, so the same libSDL2 is
++  usable on non-MiSTer hosts.
++*/
++
++#ifndef SDL_mister_ddr_h_
++#define SDL_mister_ddr_h_
++
++#include "../SDL_sysvideo.h"
++
++#if defined(SDL_VIDEO_DRIVER_OFFSCREEN) && defined(SDL_VIDEO_OPENGL_EGL) && defined(__LINUX__)
++
++extern SDL_bool MISTER_DDR_Enabled(void);
++extern SDL_bool MISTER_DDR_ScanoutForced(void);
++extern int MISTER_DDR_Init(_THIS);
++extern void MISTER_DDR_Quit(void);
++extern void MISTER_DDR_PresentGL(_THIS, int w, int h);
++extern int MISTER_DDR_ScanoutWidth(void);
++extern int MISTER_DDR_ScanoutHeight(void);
++extern void *MISTER_DDR_WrapProc(const char *proc, void *real);
++
++#else /* not a MiSTer-capable build: compile the hooks out entirely */
++
++#define MISTER_DDR_Enabled()             SDL_FALSE
++#define MISTER_DDR_ScanoutForced()       SDL_FALSE
++#define MISTER_DDR_Init(_this)           0
++#define MISTER_DDR_Quit()                do { } while (0)
++#define MISTER_DDR_PresentGL(_this, w, h) do { } while (0)
++#define MISTER_DDR_ScanoutWidth()        0
++#define MISTER_DDR_ScanoutHeight()       0
++#define MISTER_DDR_WrapProc(proc, real)  (real)
++
++#endif
++
++#endif /* SDL_mister_ddr_h_ */
+--- a/src/video/offscreen/SDL_mister_ddr.c
++++ b/src/video/offscreen/SDL_mister_ddr.c
+@@ -0,0 +1,534 @@
++/*
++  MiSTer FPGA DDR3 presentation for SDL's offscreen video driver.
++  See SDL_mister_ddr.h for the memory layout this implements.
++*/
++#include "../../SDL_internal.h"
++
++#if defined(SDL_VIDEO_DRIVER_OFFSCREEN) && defined(SDL_VIDEO_OPENGL_EGL) && defined(__LINUX__)
++
++#include "SDL_mister_ddr.h"
++#include "../SDL_egl_c.h"
++
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <unistd.h>
++#include <time.h>
++
++/* Base of the core's video region. Per-core, not a constant: the OpenBOR core
++   uses 0x3A000000, the Maldita/Donut Dodo fabric core relocates to 0x3BF40000
++   (Maldita.sv FB_QW_BASE) to stay clear of gmloader's NativeVideoWriter region.
++   Pointing this at the wrong core's base is silent — frames go to memory nothing
++   scans — so SDL_MISTER_DDR_BASE overrides it and the launcher states it. */
++#define MISTER_DDR_PHYS_BASE_DEFAULT 0x3BF40000u
++#define MISTER_DDR_REGION    0x00100000u /* 1 MiB */
++#define MISTER_CTRL_OFFSET   0x00000000u
++#define MISTER_BUF0_OFFSET   0x00000040u
++#define MISTER_BUF1_OFFSET   0x00040040u
++/* Scanout geometry is the FPGA core's wire contract, not our choice: the
++   OpenBOR/Solarus cores scan 320x240, the Maldita/Cursed fabric cores 288x216.
++   SDL_MISTER_SCANOUT=WxH selects it; default 320x240. */
++static int mddr_fb_w = 320;
++static int mddr_fb_h = 240;
++
++static Uint32 mddr_phys_base = MISTER_DDR_PHYS_BASE_DEFAULT;
++
++static void MISTER_ReadGeometry(void)
++{
++    static SDL_bool done;
++    const char *env;
++    int w, h;
++
++    if (done) {
++        return;
++    }
++    done = SDL_TRUE;
++    env = SDL_getenv("SDL_MISTER_DDR_BASE");
++    if (env && *env) {
++        Uint32 v = (Uint32)SDL_strtoul(env, NULL, 0);
++        if (v) {
++            mddr_phys_base = v;
++        }
++    }
++    env = SDL_getenv("SDL_MISTER_SCANOUT");
++    if (env && SDL_sscanf(env, "%dx%d", &w, &h) == 2 &&
++        w > 0 && h > 0 && w <= 1024 && h <= 1024) {
++        mddr_fb_w = w;
++        mddr_fb_h = h;
++    }
++}
++
++#define MISTER_FB_WIDTH      mddr_fb_w
++#define MISTER_FB_HEIGHT     mddr_fb_h
++#define MISTER_FB_BYTES      (MISTER_FB_WIDTH * MISTER_FB_HEIGHT * 2)
++
++/* GLES2 constants, spelled out so this file needs no GL headers. */
++#define MDDR_GL_RGB                            0x1907
++#define MDDR_GL_RGBA                           0x1908
++#define MDDR_GL_UNSIGNED_BYTE                  0x1401
++#define MDDR_GL_UNSIGNED_SHORT_5_6_5           0x8363
++#define MDDR_GL_IMPLEMENTATION_COLOR_READ_TYPE 0x8B9A
++#define MDDR_GL_IMPLEMENTATION_COLOR_READ_FMT  0x8B9B
++
++typedef void (*MDDR_ReadPixels)(int, int, int, int, unsigned int, unsigned int, void *);
++typedef void (*MDDR_GetIntegerv)(unsigned int, int *);
++
++static struct
++{
++    SDL_bool active;
++    int mem_fd;
++    volatile Uint8 *ddr;
++    Uint32 frame_counter;
++    Uint32 active_buf;
++    MDDR_ReadPixels glReadPixels;
++    SDL_bool direct565; /* driver can hand us RGB565 straight from glReadPixels */
++    Uint8 *scratch;     /* RGBA8888 staging when direct565 is unavailable */
++    Uint16 *rowbuf;     /* one RGB565 row, for the bottom-up flip */
++    Uint64 pace_ns;     /* frame pacing interval, 0 = uncapped */
++    Uint64 next_frame_ns;
++    SDL_bool init_failed;
++    SDL_bool skip_read;   /* count frames but do no readback: isolates engine cost */
++    SDL_bool stats;
++    Uint32 stat_frames;
++    Uint64 stat_start_ns;
++    Uint64 stat_read_ns;
++    Uint64 stat_conv_ns;
++} mddr;
++
++static Uint64 MISTER_NowNS(void)
++{
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (Uint64)ts.tv_sec * 1000000000ull + (Uint64)ts.tv_nsec;
++}
++
++SDL_bool MISTER_DDR_Enabled(void)
++{
++    return SDL_GetHintBoolean("SDL_MISTER_DDR", SDL_FALSE);
++}
++
++/* The desktop we report must match the FPGA scanout whenever we are running
++   against a MiSTer core at all — including when the fabric (not this file's
++   readback) is producing the frames, in which case SDL_MISTER_DDR is off.
++   Getting this wrong lets the engine size its output to the placeholder 1024x768
++   desktop, which is invisible until it reaches the scanout. */
++SDL_bool MISTER_DDR_ScanoutForced(void)
++{
++    const char *env = SDL_getenv("SDL_MISTER_SCANOUT");
++    return (env && *env) ? SDL_TRUE : MISTER_DDR_Enabled();
++}
++
++int MISTER_DDR_ScanoutWidth(void)
++{
++    MISTER_ReadGeometry();
++    return MISTER_FB_WIDTH;
++}
++
++int MISTER_DDR_ScanoutHeight(void)
++{
++    MISTER_ReadGeometry();
++    return MISTER_FB_HEIGHT;
++}
++
++int MISTER_DDR_Init(_THIS)
++{
++    MDDR_GetIntegerv p_glGetIntegerv;
++    int read_fmt = 0, read_type = 0;
++    void *map;
++
++    if (!MISTER_DDR_Enabled()) {
++        return 0;
++    }
++    if (mddr.active) {
++        return 0;
++    }
++
++    mddr.glReadPixels = (MDDR_ReadPixels)SDL_EGL_GetProcAddress(_this, "glReadPixels");
++    p_glGetIntegerv = (MDDR_GetIntegerv)SDL_EGL_GetProcAddress(_this, "glGetIntegerv");
++    if (!mddr.glReadPixels || !p_glGetIntegerv) {
++        return SDL_SetError("MiSTer DDR: glReadPixels/glGetIntegerv unavailable");
++    }
++
++    /* GLES2 guarantees GL_RGBA/GL_UNSIGNED_BYTE plus one implementation-chosen
++       pair. If that pair is RGB565 we can skip the conversion entirely. */
++    p_glGetIntegerv(MDDR_GL_IMPLEMENTATION_COLOR_READ_FMT, &read_fmt);
++    p_glGetIntegerv(MDDR_GL_IMPLEMENTATION_COLOR_READ_TYPE, &read_type);
++    mddr.direct565 = (read_fmt == MDDR_GL_RGB && read_type == MDDR_GL_UNSIGNED_SHORT_5_6_5) ? SDL_TRUE : SDL_FALSE;
++
++    mddr.mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
++    if (mddr.mem_fd < 0) {
++        return SDL_SetError("MiSTer DDR: cannot open /dev/mem (root required)");
++    }
++    MISTER_ReadGeometry();
++    map = mmap(NULL, MISTER_DDR_REGION, PROT_READ | PROT_WRITE, MAP_SHARED,
++               mddr.mem_fd, mddr_phys_base);
++    if (map == MAP_FAILED) {
++        close(mddr.mem_fd);
++        mddr.mem_fd = -1;
++        return SDL_SetError("MiSTer DDR: mmap of 0x%08X failed", mddr_phys_base);
++    }
++    mddr.ddr = (volatile Uint8 *)map;
++
++    MISTER_ReadGeometry();
++    mddr.rowbuf = (Uint16 *)SDL_malloc((size_t)MISTER_FB_WIDTH * sizeof(Uint16));
++    if (!mddr.direct565) {
++        mddr.scratch = (Uint8 *)SDL_malloc((size_t)MISTER_FB_WIDTH * MISTER_FB_HEIGHT * 4);
++    }
++    if (!mddr.rowbuf || (!mddr.direct565 && !mddr.scratch)) {
++        MISTER_DDR_Quit();
++        return SDL_OutOfMemory();
++    }
++
++    /* Blank both buffers and tell the FPGA no frame is ready yet. */
++    SDL_memset((void *)(mddr.ddr + MISTER_BUF0_OFFSET), 0, MISTER_FB_BYTES);
++    SDL_memset((void *)(mddr.ddr + MISTER_BUF1_OFFSET), 0, MISTER_FB_BYTES);
++    *(volatile Uint32 *)(mddr.ddr + MISTER_CTRL_OFFSET) = 0;
++
++    mddr.frame_counter = 0;
++    mddr.active_buf = 0;
++    mddr.pace_ns = 0;
++    {
++        const char *fps = SDL_getenv("SDL_MISTER_FPS");
++        double v = fps ? SDL_atof(fps) : 0.0;
++        if (v > 0.0) {
++            mddr.pace_ns = (Uint64)(1000000000.0 / v);
++        }
++    }
++    mddr.next_frame_ns = 0;
++    mddr.skip_read = SDL_GetHintBoolean("SDL_MISTER_SKIP_READ", SDL_FALSE);
++    mddr.stats = SDL_GetHintBoolean("SDL_MISTER_STATS", SDL_FALSE);
++    mddr.stat_frames = 0;
++    mddr.stat_start_ns = MISTER_NowNS();
++    mddr.stat_read_ns = 0;
++    mddr.stat_conv_ns = 0;
++    mddr.active = SDL_TRUE;
++
++    SDL_Log("MiSTer DDR present: %dx%d RGB565, readback=%s, pacing=%s",
++            MISTER_FB_WIDTH, MISTER_FB_HEIGHT,
++            mddr.direct565 ? "native565" : "rgba8888+convert",
++            mddr.pace_ns ? "on" : "off");
++    return 0;
++}
++
++void MISTER_DDR_Quit(void)
++{
++    if (mddr.ddr) {
++        *(volatile Uint32 *)(mddr.ddr + MISTER_CTRL_OFFSET) = 0; /* blank output */
++        munmap((void *)mddr.ddr, MISTER_DDR_REGION);
++        mddr.ddr = NULL;
++    }
++    if (mddr.mem_fd >= 0) {
++        close(mddr.mem_fd);
++        mddr.mem_fd = -1;
++    }
++    SDL_free(mddr.scratch);
++    SDL_free(mddr.rowbuf);
++    mddr.scratch = NULL;
++    mddr.rowbuf = NULL;
++    mddr.active = SDL_FALSE;
++}
++
++static void MISTER_ConvertRow_RGBA8888_to_565(const Uint8 *src, Uint16 *dst, int count)
++{
++    int x;
++    for (x = 0; x < count; x++) {
++        const Uint8 r = src[0], g = src[1], b = src[2];
++        dst[x] = (Uint16)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
++        src += 4;
++    }
++}
++
++/* ---- GL call accounting -------------------------------------------------
++   Godot resolves its GLES2 entry points through SDL_GL_GetProcAddress, so
++   handing back wrappers here counts and times every call without touching the
++   engine or Mesa. Enabled with SDL_MISTER_GLPROF=1. */
++
++typedef void (*MDDR_VoidFn)(void);
++
++#define MDDR_PROF_SLOTS 10
++static struct
++{
++    SDL_bool on;
++    const char *name[MDDR_PROF_SLOTS];
++    Uint32 calls[MDDR_PROF_SLOTS];
++    Uint64 ns[MDDR_PROF_SLOTS];
++    MDDR_VoidFn real[MDDR_PROF_SLOTS];
++} mprof;
++
++#define MDDR_SLOT_DRAWARRAYS   0
++#define MDDR_SLOT_DRAWELEMENTS 1
++#define MDDR_SLOT_CLEAR        2
++#define MDDR_SLOT_USEPROGRAM   3
++#define MDDR_SLOT_BINDTEXTURE  4
++#define MDDR_SLOT_TEXIMAGE     5
++#define MDDR_SLOT_BUFFERDATA   6
++#define MDDR_SLOT_BINDFB       7
++#define MDDR_SLOT_SHADERSRC    8
++#define MDDR_SLOT_VIEWPORT     9
++
++/* SDL_MISTER_NULLGL=1 drops the drawing calls on the floor: the engine still
++   does all of its own per-frame work, so the resulting frame rate is the
++   ceiling any rendering offload (FPGA blitter, faster GL) could reach. */
++static SDL_bool mddr_nullgl;
++
++#define MDDR_WRAP(slot, sig, args)                          \
++    {                                                       \
++        Uint64 t0 = MISTER_NowNS();                         \
++        if (!mddr_nullgl) {                                 \
++            ((sig)mprof.real[slot]) args;                   \
++        }                                                   \
++        mprof.ns[slot] += MISTER_NowNS() - t0;              \
++        mprof.calls[slot]++;                                \
++    }
++
++#define MDDR_WRAP_ALWAYS(slot, sig, args)                   \
++    {                                                       \
++        Uint64 t0 = MISTER_NowNS();                         \
++        ((sig)mprof.real[slot]) args;                       \
++        mprof.ns[slot] += MISTER_NowNS() - t0;              \
++        mprof.calls[slot]++;                                \
++    }
++
++static void mddr_glDrawArrays(unsigned int a, int b, int c)
++{
++    MDDR_WRAP(MDDR_SLOT_DRAWARRAYS, void (*)(unsigned int, int, int), (a, b, c))
++}
++static void mddr_glDrawElements(unsigned int a, int b, unsigned int c, const void *d)
++{
++    MDDR_WRAP(MDDR_SLOT_DRAWELEMENTS, void (*)(unsigned int, int, unsigned int, const void *), (a, b, c, d))
++}
++static void mddr_glClear(unsigned int a)
++{
++    MDDR_WRAP(MDDR_SLOT_CLEAR, void (*)(unsigned int), (a))
++}
++static void mddr_glUseProgram(unsigned int a)
++{
++    MDDR_WRAP_ALWAYS(MDDR_SLOT_USEPROGRAM, void (*)(unsigned int), (a))
++}
++static void mddr_glBindTexture(unsigned int a, unsigned int b)
++{
++    MDDR_WRAP_ALWAYS(MDDR_SLOT_BINDTEXTURE, void (*)(unsigned int, unsigned int), (a, b))
++}
++static void mddr_glTexImage2D(unsigned int a, int b, int c, int d, int e, int f, unsigned int g, unsigned int h, const void *i)
++{
++    MDDR_WRAP_ALWAYS(MDDR_SLOT_TEXIMAGE, void (*)(unsigned int, int, int, int, int, int, unsigned int, unsigned int, const void *), (a, b, c, d, e, f, g, h, i))
++}
++static void mddr_glBufferData(unsigned int a, long b, const void *c, unsigned int d)
++{
++    MDDR_WRAP_ALWAYS(MDDR_SLOT_BUFFERDATA, void (*)(unsigned int, long, const void *, unsigned int), (a, b, c, d))
++}
++static void mddr_glBindFramebuffer(unsigned int a, unsigned int b)
++{
++    MDDR_WRAP_ALWAYS(MDDR_SLOT_BINDFB, void (*)(unsigned int, unsigned int), (a, b))
++}
++
++static void mddr_glShaderSource(unsigned int shader, int count, const char *const *strings, const int *lengths)
++{
++    static int dumped;
++    void (*real_fn)(unsigned int, int, const char *const *, const int *) =
++        (void (*)(unsigned int, int, const char *const *, const int *))mprof.real[MDDR_SLOT_SHADERSRC];
++
++    if (SDL_GetHintBoolean("SDL_MISTER_SHADER_DUMP", SDL_FALSE) && dumped < 64) {
++        char path[64];
++        SDL_RWops *f;
++        SDL_snprintf(path, sizeof(path), "/tmp/mister_shader_%02d.glsl", dumped++);
++        f = SDL_RWFromFile(path, "wb");
++        if (f) {
++            int i;
++            for (i = 0; i < count; i++) {
++                if (strings[i]) {
++                    SDL_RWwrite(f, strings[i], 1, lengths && lengths[i] > 0 ? (size_t)lengths[i] : SDL_strlen(strings[i]));
++                }
++            }
++            SDL_RWclose(f);
++        }
++    }
++    real_fn(shader, count, strings, lengths);
++    mprof.calls[MDDR_SLOT_SHADERSRC]++;
++}
++
++/* Distinct viewport rectangles seen in a stats window: tells us what the engine
++   is really rasterising, as opposed to what the window size claims. */
++#define MDDR_VP_SLOTS 8
++static struct { int x, y, w, h; Uint32 hits; } mddr_vp[MDDR_VP_SLOTS];
++
++static void mddr_glViewport(int x, int y, int w, int h)
++{
++    void (*real_fn)(int, int, int, int) = (void (*)(int, int, int, int))mprof.real[MDDR_SLOT_VIEWPORT];
++    int i;
++
++    for (i = 0; i < MDDR_VP_SLOTS; i++) {
++        if (mddr_vp[i].hits && mddr_vp[i].x == x && mddr_vp[i].y == y && mddr_vp[i].w == w && mddr_vp[i].h == h) {
++            mddr_vp[i].hits++;
++            break;
++        }
++        if (!mddr_vp[i].hits) {
++            mddr_vp[i].x = x; mddr_vp[i].y = y; mddr_vp[i].w = w; mddr_vp[i].h = h;
++            mddr_vp[i].hits = 1;
++            break;
++        }
++    }
++    mprof.calls[MDDR_SLOT_VIEWPORT]++;
++    real_fn(x, y, w, h);
++}
++
++void *MISTER_DDR_WrapProc(const char *proc, void *real)
++{
++    struct
++    {
++        const char *name;
++        int slot;
++        void *wrapper;
++    } table[] = {
++        { "glDrawArrays", MDDR_SLOT_DRAWARRAYS, (void *)mddr_glDrawArrays },
++        { "glDrawElements", MDDR_SLOT_DRAWELEMENTS, (void *)mddr_glDrawElements },
++        { "glClear", MDDR_SLOT_CLEAR, (void *)mddr_glClear },
++        { "glUseProgram", MDDR_SLOT_USEPROGRAM, (void *)mddr_glUseProgram },
++        { "glBindTexture", MDDR_SLOT_BINDTEXTURE, (void *)mddr_glBindTexture },
++        { "glTexImage2D", MDDR_SLOT_TEXIMAGE, (void *)mddr_glTexImage2D },
++        { "glBufferData", MDDR_SLOT_BUFFERDATA, (void *)mddr_glBufferData },
++        { "glBindFramebuffer", MDDR_SLOT_BINDFB, (void *)mddr_glBindFramebuffer },
++        { "glShaderSource", MDDR_SLOT_SHADERSRC, (void *)mddr_glShaderSource },
++        { "glViewport", MDDR_SLOT_VIEWPORT, (void *)mddr_glViewport },
++    };
++    size_t i;
++
++    if (!real) {
++        return NULL;
++    }
++    mddr_nullgl = SDL_GetHintBoolean("SDL_MISTER_NULLGL", SDL_FALSE);
++    if (!mprof.on) {
++        mprof.on = mddr_nullgl || SDL_GetHintBoolean("SDL_MISTER_GLPROF", SDL_FALSE) ||
++                   SDL_GetHintBoolean("SDL_MISTER_SHADER_DUMP", SDL_FALSE);
++        if (!mprof.on) {
++            return real;
++        }
++    }
++    for (i = 0; i < SDL_arraysize(table); i++) {
++        if (SDL_strcmp(proc, table[i].name) == 0) {
++            mprof.real[table[i].slot] = (MDDR_VoidFn)real;
++            mprof.name[table[i].slot] = table[i].name;
++            return table[i].wrapper;
++        }
++    }
++    return real;
++}
++
++static void MISTER_ProfReport(Uint32 frames)
++{
++    int i;
++
++    if (!mprof.on) {
++        return;
++    }
++    for (i = 0; i < MDDR_VP_SLOTS; i++) {
++        if (mddr_vp[i].hits) {
++            SDL_Log("  viewport %dx%d+%d+%d  %.1f/f", mddr_vp[i].w, mddr_vp[i].h,
++                    mddr_vp[i].x, mddr_vp[i].y, (double)mddr_vp[i].hits / frames);
++            mddr_vp[i].hits = 0;
++        }
++    }
++    for (i = 0; i < MDDR_PROF_SLOTS; i++) {
++        if (mprof.calls[i]) {
++            SDL_Log("  %-18s %6.1f calls/f  %6.2f ms/f",
++                    mprof.name[i] ? mprof.name[i] : "?",
++                    (double)mprof.calls[i] / frames,
++                    (double)mprof.ns[i] / 1e6 / frames);
++        }
++        mprof.calls[i] = 0;
++        mprof.ns[i] = 0;
++    }
++}
++
++void MISTER_DDR_PresentGL(_THIS, int w, int h)
++{
++    volatile Uint8 *dst;
++    int y;
++
++    if (!mddr.active) {
++        /* Deferred until now: glGetIntegerv needs a current GL context, which
++           only exists once the engine has created and made one current. */
++        if (mddr.init_failed || !MISTER_DDR_Enabled()) {
++            return;
++        }
++        if (MISTER_DDR_Init(_this) < 0) {
++            SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "MiSTer DDR present disabled: %s", SDL_GetError());
++            mddr.init_failed = SDL_TRUE;
++            return;
++        }
++    }
++    /* The FPGA scanout is a fixed 320x240 window; anything else would tear or
++       run off the end of the buffer, so drop it rather than write garbage. */
++    if (w != MISTER_FB_WIDTH || h != MISTER_FB_HEIGHT) {
++        return;
++    }
++
++    dst = mddr.ddr + (mddr.active_buf == 0 ? MISTER_BUF0_OFFSET : MISTER_BUF1_OFFSET);
++
++    if (mddr.skip_read) {
++        /* nothing to copy; still publish so frame pacing and the counter run */
++    } else if (mddr.direct565) {
++        /* Read straight into DDR one row at a time, flipping GL's bottom-up
++           origin into the scanout's top-down order. */
++        for (y = 0; y < MISTER_FB_HEIGHT; y++) {
++            mddr.glReadPixels(0, y, MISTER_FB_WIDTH, 1, MDDR_GL_RGB,
++                              MDDR_GL_UNSIGNED_SHORT_5_6_5, mddr.rowbuf);
++            SDL_memcpy((void *)(dst + (size_t)(MISTER_FB_HEIGHT - 1 - y) * MISTER_FB_WIDTH * 2),
++                       mddr.rowbuf, MISTER_FB_WIDTH * 2);
++        }
++    } else {
++        Uint64 t_read0 = MISTER_NowNS();
++        mddr.glReadPixels(0, 0, MISTER_FB_WIDTH, MISTER_FB_HEIGHT, MDDR_GL_RGBA,
++                          MDDR_GL_UNSIGNED_BYTE, mddr.scratch);
++        mddr.stat_read_ns += MISTER_NowNS() - t_read0;
++        t_read0 = MISTER_NowNS();
++        for (y = 0; y < MISTER_FB_HEIGHT; y++) {
++            const Uint8 *src = mddr.scratch + (size_t)y * MISTER_FB_WIDTH * 4;
++            MISTER_ConvertRow_RGBA8888_to_565(src, mddr.rowbuf, MISTER_FB_WIDTH);
++            SDL_memcpy((void *)(dst + (size_t)(MISTER_FB_HEIGHT - 1 - y) * MISTER_FB_WIDTH * 2),
++                       mddr.rowbuf, MISTER_FB_WIDTH * 2);
++        }
++        mddr.stat_conv_ns += MISTER_NowNS() - t_read0;
++    }
++
++    /* Control word goes out after the pixels; the reader latches it once per
++       vblank and only then switches to this buffer. */
++    mddr.frame_counter++;
++    *(volatile Uint32 *)(mddr.ddr + MISTER_CTRL_OFFSET) =
++        (mddr.frame_counter << 2) | (mddr.active_buf & 1);
++    mddr.active_buf ^= 1;
++
++    if (mddr.stats) {
++        mddr.stat_frames++;
++        if (mddr.stat_frames >= 120) {
++            Uint64 now = MISTER_NowNS();
++            double secs = (double)(now - mddr.stat_start_ns) / 1e9;
++            SDL_Log("MiSTer present: %.2f fps over %u frames | readback %.2f ms/f | convert+copy %.2f ms/f",
++                    mddr.stat_frames / secs, mddr.stat_frames,
++                        (double)mddr.stat_read_ns / 1e6 / mddr.stat_frames,
++                        (double)mddr.stat_conv_ns / 1e6 / mddr.stat_frames);
++            MISTER_ProfReport(mddr.stat_frames);
++            mddr.stat_frames = 0;
++            mddr.stat_start_ns = now;
++            mddr.stat_read_ns = 0;
++            mddr.stat_conv_ns = 0;
++        }
++    }
++
++    if (mddr.pace_ns) {
++        Uint64 now = MISTER_NowNS();
++        if (mddr.next_frame_ns == 0 || now > mddr.next_frame_ns + mddr.pace_ns * 4) {
++            mddr.next_frame_ns = now + mddr.pace_ns;
++        } else {
++            struct timespec ts;
++            if (mddr.next_frame_ns > now) {
++                Uint64 sleep_ns = mddr.next_frame_ns - now;
++                ts.tv_sec = (time_t)(sleep_ns / 1000000000ull);
++                ts.tv_nsec = (long)(sleep_ns % 1000000000ull);
++                nanosleep(&ts, NULL);
++            }
++            mddr.next_frame_ns += mddr.pace_ns;
++        }
++    }
++}
++
++#endif /* SDL_VIDEO_DRIVER_OFFSCREEN && SDL_VIDEO_OPENGL_EGL && __LINUX__ */
+--- a/src/video/offscreen/mister_glue_abi.h
++++ b/src/video/offscreen/mister_glue_abi.h
+@@ -0,0 +1,58 @@
++/*
++  ABI between our patched SDL2 and libmisterglue.so.
++
++  SDL owns the GL context (Mesa/llvmpipe, surfaceless EGL) and the window; the
++  glue owns the FPGA fabric. SDL asks the glue to resolve each GL entry point
++  Godot looks up: the glue returns its own wrapper for calls it shadows, or NULL
++  to hand back Mesa's function unchanged. Every wrapper can still call into Mesa
++  through host->get_real_proc, so an unsupported draw falls back per draw rather
++  than per frame.
++
++  Kept deliberately small: SDL should not need rebuilding when the glue changes.
++*/
++#ifndef MISTER_GLUE_ABI_H
++#define MISTER_GLUE_ABI_H
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define MISTER_GLUE_ABI_VERSION 1
++#define MISTER_GLUE_ENTRY       "MisterGlue_Get"
++
++typedef struct MisterGlueHost {
++    uint32_t abi_version;
++    /* Resolve the real (Mesa) entry point; the glue keeps these for fallback. */
++    void *(*get_real_proc)(const char *proc);
++    /* Scanout geometry the FPGA core expects — the fabric's wire contract. */
++    int scanout_w;
++    int scanout_h;
++    /* Optional logger; may be NULL. */
++    void (*log)(const char *msg);
++} MisterGlueHost;
++
++typedef struct MisterGlue {
++    uint32_t abi_version;
++
++    /* Returns 0 on success. On failure SDL keeps using Mesa for everything. */
++    int (*init)(const MisterGlueHost *host);
++    void (*shutdown)(void);
++
++    /* NULL => caller should use the real GL function for this name. */
++    void *(*resolve)(const char *proc);
++
++    /* Called from SDL_GL_SwapWindow. Returns 1 if the glue presented the frame
++       (fabric owns scanout, SDL must not read pixels back), 0 if SDL should
++       present the GL framebuffer itself. */
++    int (*present)(void);
++} MisterGlue;
++
++/* The module's single exported symbol. */
++const MisterGlue *MisterGlue_Get(void);
++
++#ifdef __cplusplus
++}
++#endif
++#endif /* MISTER_GLUE_ABI_H */

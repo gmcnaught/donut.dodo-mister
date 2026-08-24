@@ -1,0 +1,11 @@
+--- /tmp/detect_godot3.py.orig	2026-08-22 21:23:23
++++ godot-3.5.2-stable/platform/frt/detect_godot3.py	2026-08-22 21:23:23
+@@ -52,7 +52,7 @@
+ 		env.Append(CCFLAGS=['-march=armv6', '-mfpu=vfp', '-mfloat-abi=hard'])
+ 		env.extra_suffix += '.arm32v6'
+ 	elif env['frt_arch'] == 'arm32v7':
+-		env.Append(CCFLAGS=['-march=armv7-a', '-mfpu=neon-vfpv4', '-mfloat-abi=hard'])
++		env.Append(CCFLAGS=['-march=armv7-a', '-mfpu=neon', '-mtune=cortex-a9', '-mfloat-abi=hard'])
+ 		env.extra_suffix += '.arm32v7'
+ 	elif env['frt_arch'] == 'arm64v8':
+ 		env.Append(CCFLAGS=['-march=armv8-a'])

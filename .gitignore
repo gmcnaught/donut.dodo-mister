@@ -1,0 +1,22 @@
+# Upstream trees (SDL2, Godot+FRT) and their build output. Not committed: the
+# pinned versions and our diffs live in patches/ — see patches/README.md.
+work/
+
+# libmisterglue.so build output (make)
+build/
+
+# Quartus bitstreams and their reports. The RBF is a release artifact, not source.
+_Other/*.rbf
+_reports/
+_reports_h40/
+
+# host-built test/selftest binaries (Mach-O here, ELF elsewhere — a committed one
+# is wrong on any other architecture). Rebuilt by the Makefiles beside them.
+src/vendor/mfgpu/host/test_emitter
+src/vendor/mfgpu/host/selftest_emitter
+src/vendor/mfgpu/refmodel/selftest_ref
+src/vendor/mfgpu/refmodel/test_blitter_ref
+src/vendor/mfgpu/refmodel/test_blt_tri
+
+.serena/
+.DS_Store

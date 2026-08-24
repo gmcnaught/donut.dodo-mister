@@ -1,0 +1,21 @@
+--- a/sdl2_adapter.h
++++ b/sdl2_adapter.h
+@@ -393,6 +393,7 @@
+ 				return;
+ 			int button = ev.jbutton.button;
+ 			bool pressed = ev.jbutton.state == SDL_PRESSED;
++			fprintf(stderr, "FRTJOY: button id=%d btn=%d %s\n", id, button, pressed ? "down" : "up");
+ 			handler_->handle_js_button_event(id, button, pressed);
+ 			} break;
+ 		case SDL_JOYDEVICEADDED: {
+@@ -402,8 +403,10 @@
+ 			const char *name = SDL_JoystickNameForIndex(id);
+ 			char guid[64];
+ 			SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(id), guid, sizeof(guid));
++			fprintf(stderr, "FRTJOY: device added id=%d name='%s' guid=%s\n", id, name ? name : "?", guid);
+ 			handler_->handle_js_status_event(id, true, name, guid);
+ 			js_[id] = SDL_JoystickOpen(id);
++			fprintf(stderr, "FRTJOY: opened id=%d -> %p\n", id, (void *)js_[id]);
+ 			rumble_timestamp_[id] = 0;
+ 			if (SDL_JoystickRumble)
+ 				rumble_supported_ |= (1 << id);

@@ -1,0 +1,484 @@
+--- a/src/joystick/SDL_joystick.c
++++ b/src/joystick/SDL_joystick.c
+@@ -70,6 +70,9 @@
+ #ifdef SDL_JOYSTICK_LINUX
+     &SDL_LINUX_JoystickDriver,
+ #endif
++#ifdef SDL_JOYSTICK_MISTER
++    &SDL_MISTER_JoystickDriver,
++#endif
+ #ifdef SDL_JOYSTICK_IOKIT
+     &SDL_DARWIN_JoystickDriver,
+ #endif
+@@ -110,6 +113,34 @@
+         &SDL_DUMMY_JoystickDriver
+ #endif
+ };
++
++#ifdef SDL_JOYSTICK_MISTER
++/* [MiSTer] With SDL_MISTER_JOY set, the DDR driver is the ONLY joystick source.
++   This used to be enforced in SDL_JoystickInit alone, which is not enough: the
++   array is walked in four other places, and SDL_JoystickDetect() calls Detect()
++   on every driver whether or not its Init ran. LINUX_JoystickDetect then scans
++   /dev/input, finds the pad MiSTer holds an exclusive EVDEV grab on, and adds a
++   joystick that can never report an event -- taking a low index while the DDR
++   device that does work sits behind it. Measured on device 2026-08-24: with the
++   Init-only skip, frt had /dev/input/event2 (the 8BitDo) open and the DDR
++   joystick words at 0x3BF40008 changed under a press while the engine saw
++   nothing. Suppress everywhere the array is walked, so the counts, the
++   index->driver mapping, Detect and Quit all agree on one driver. */
++static SDL_bool SDL_JoystickDriverSuppressed(SDL_JoystickDriver *driver)
++{
++    static int mister_only = -1;
++
++    if (driver == &SDL_MISTER_JoystickDriver) {
++        return SDL_FALSE;
++    }
++    if (mister_only < 0) {
++        mister_only = SDL_GetHintBoolean("SDL_MISTER_JOY", SDL_FALSE) ? 1 : 0;
++    }
++    return mister_only ? SDL_TRUE : SDL_FALSE;
++}
++#else
++#define SDL_JoystickDriverSuppressed(driver) SDL_FALSE
++#endif
+ 
+ #ifndef SDL_THREAD_SAFETY_ANALYSIS
+ static
+@@ -494,6 +525,9 @@
+ 
+     if (device_index >= 0) {
+         for (i = 0; i < SDL_arraysize(SDL_joystick_drivers); ++i) {
++            if (SDL_JoystickDriverSuppressed(SDL_joystick_drivers[i])) {
++                continue;
++            }
+             num_joysticks = SDL_joystick_drivers[i]->GetCount();
+             if (device_index < num_joysticks) {
+                 *driver = SDL_joystick_drivers[i];
+@@ -644,6 +678,9 @@
+ 
+     status = -1;
+     for (i = 0; i < SDL_arraysize(SDL_joystick_drivers); ++i) {
++        if (SDL_JoystickDriverSuppressed(SDL_joystick_drivers[i])) {
++            continue;
++        }
+         if (SDL_joystick_drivers[i]->Init() >= 0) {
+             status = 0;
+         }
+@@ -665,6 +702,9 @@
+     int i, total_joysticks = 0;
+     SDL_LockJoysticks();
+     for (i = 0; i < SDL_arraysize(SDL_joystick_drivers); ++i) {
++        if (SDL_JoystickDriverSuppressed(SDL_joystick_drivers[i])) {
++            continue;
++        }
+         total_joysticks += SDL_joystick_drivers[i]->GetCount();
+     }
+     SDL_UnlockJoysticks();
+@@ -1651,6 +1691,9 @@
+ 
+     /* Quit drivers in reverse order to avoid breaking dependencies between drivers */
+     for (i = SDL_arraysize(SDL_joystick_drivers) - 1; i >= 0; --i) {
++        if (SDL_JoystickDriverSuppressed(SDL_joystick_drivers[i])) {
++            continue;   /* its Init never ran */
++        }
+         SDL_joystick_drivers[i]->Quit();
+     }
+ 
+@@ -2219,6 +2262,9 @@
+        dangling hardware data from removed devices can be free'd
+      */
+     for (i = 0; i < SDL_arraysize(SDL_joystick_drivers); ++i) {
++        if (SDL_JoystickDriverSuppressed(SDL_joystick_drivers[i])) {
++            continue;
++        }
+         SDL_joystick_drivers[i]->Detect();
+     }
+ 
+--- a/src/joystick/SDL_sysjoystick.h
++++ b/src/joystick/SDL_sysjoystick.h
+@@ -244,6 +244,7 @@
+ extern SDL_JoystickDriver SDL_RAWINPUT_JoystickDriver;
+ extern SDL_JoystickDriver SDL_IOS_JoystickDriver;
+ extern SDL_JoystickDriver SDL_LINUX_JoystickDriver;
++extern SDL_JoystickDriver SDL_MISTER_JoystickDriver;
+ extern SDL_JoystickDriver SDL_VIRTUAL_JoystickDriver;
+ extern SDL_JoystickDriver SDL_WGI_JoystickDriver;
+ extern SDL_JoystickDriver SDL_WINDOWS_JoystickDriver;
+--- a/src/joystick/SDL_sysjoystick_mister.c
++++ b/src/joystick/SDL_sysjoystick_mister.c
+@@ -0,0 +1,374 @@
++/*
++  MiSTer joystick driver.
++
++  On MiSTer the physical controller belongs to the framework, not to us: the HPS
++  reads the pad, applies whatever mapping the user set in the core's OSD, and the
++  core publishes the resulting normalised joystick word into DDR3 each frame
++  (openbor_video_reader.sv writes joystick_0/1 at +0x008 / +0x018). Reading that
++  word — rather than /dev/input directly — is what makes the OSD's button
++  assignments apply to the game, which is the behaviour a MiSTer user expects.
++
++  Word layout (MiSTer digital joystick order, then the core's CONF_STR J1 list):
++    bit0 right, bit1 left, bit2 down, bit3 up, bit4.. buttons in CONF_STR order.
++
++  Enabled with SDL_MISTER_JOY=1; SDL_MISTER_JOY_PLAYERS selects how many pads to
++  expose (default 1).
++*/
++#include "../SDL_internal.h"
++
++#ifdef SDL_JOYSTICK_MISTER
++
++#include "SDL_events.h"       /* SDL_PRESSED / SDL_RELEASED */
++#include "SDL_joystick.h"
++#include "SDL_sysjoystick.h"
++#include "SDL_joystick_c.h"
++
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++/* Base of the core's video/joystick region. This is per-core, not a constant:
++   the OpenBOR core keeps it at 0x3A000000, while the Maldita/Donut Dodo fabric
++   core relocates it to 0x3BF40000 to stay clear of gmloader's NativeVideoWriter
++   region (Maldita.sv's FB_QW_BASE). Reading the wrong one is silent — the words
++   simply never change — so it is overridable and the launcher sets it. */
++#define MISTER_JOY_DDR_BASE_DEFAULT 0x3BF40000u
++#define MISTER_JOY_MAP_LEN  0x1000u
++#define MISTER_JOY_P1_OFF   0x008u
++#define MISTER_JOY_P2_OFF   0x018u
++#define MISTER_JOY_MAX_PADS 2
++/* Buttons are reported at GODOT's joypad indices, not packed 0..7.
++   FRT hands Godot the RAW SDL button index (frt_godot3.cc: input_->joy_button),
++   and Godot only renumbers devices whose GUID is in its own controller
++   database. Ours is a synthetic GUID, so it stays unmapped and the raw index IS
++   what the game's input map sees. Godot's constants are A=0 B=1 X=2 Y=3 L=4
++   R=5 L2=6 R2=7 L3=8 R3=9 SELECT=10 START=11, so Start and Select must land at
++   11 and 10 -- packing them at 4 and 5 gives a pad where Jump works (0/1 line
++   up by luck) and Start does nothing. */
++#define MISTER_JOY_BUTTONS  12
++
++/* MiSTer word bit -> SDL/Godot button index. Word bit 4 is the first CONF_STR
++   button, and the CONF_STR names them A,B,X,Y,Start,Select,L,R in that order. */
++#define MISTER_JOY_BTN_SHIFT 4
++#define MISTER_JOY_SRC_BITS  8
++static const Uint8 mister_btn_index[MISTER_JOY_SRC_BITS] = {
++    0,   /* A      -> JOY_XBOX_A */
++    1,   /* B      -> JOY_XBOX_B */
++    2,   /* X      -> JOY_XBOX_X */
++    3,   /* Y      -> JOY_XBOX_Y */
++    11,  /* Start  -> JOY_START  */
++    10,  /* Select -> JOY_SELECT */
++    4,   /* L      -> JOY_L      */
++    5    /* R      -> JOY_R      */
++};
++
++typedef struct
++{
++    SDL_JoystickID instance_id;
++    Uint32 offset;
++    Uint32 last_word;
++} MISTER_JoyDevice;
++
++static MISTER_JoyDevice mister_pads[MISTER_JOY_MAX_PADS];
++static int mister_npads;
++static int mister_mem_fd = -1;
++static volatile Uint8 *mister_ddr;
++static Uint32 mister_base = MISTER_JOY_DDR_BASE_DEFAULT;
++
++static Uint32 MISTER_ReadWord(Uint32 offset)
++{
++    if (!mister_ddr) {
++        return 0;
++    }
++    return *(volatile Uint32 *)(mister_ddr + offset);
++}
++
++static int MISTER_JoystickInit(void)
++{
++    void *map;
++    int want;
++    const char *env;
++
++    mister_npads = 0;
++
++    if (!SDL_GetHintBoolean("SDL_MISTER_JOY", SDL_FALSE)) {
++        return 0;
++    }
++
++    env = SDL_getenv("SDL_MISTER_JOY_BASE");
++    if (env && *env) {
++        Uint32 v = (Uint32)SDL_strtoul(env, NULL, 0);
++        if (v) {
++            mister_base = v;
++        }
++    }
++
++    mister_mem_fd = open("/dev/mem", O_RDONLY | O_SYNC);
++    if (mister_mem_fd < 0) {
++        SDL_Log("MiSTer joystick: /dev/mem unavailable; no pads exposed");
++        return 0;
++    }
++    map = mmap(NULL, MISTER_JOY_MAP_LEN, PROT_READ, MAP_SHARED,
++               mister_mem_fd, mister_base);
++    if (map == MAP_FAILED) {
++        close(mister_mem_fd);
++        mister_mem_fd = -1;
++        SDL_Log("MiSTer joystick: mmap of 0x%08X failed; no pads exposed", mister_base);
++        return 0;
++    }
++    mister_ddr = (volatile Uint8 *)map;
++
++    env = SDL_getenv("SDL_MISTER_JOY_PLAYERS");
++    want = env ? SDL_atoi(env) : 1;
++    if (want < 1) want = 1;
++    if (want > MISTER_JOY_MAX_PADS) want = MISTER_JOY_MAX_PADS;
++
++    for (int i = 0; i < want; i++) {
++        mister_pads[i].instance_id = SDL_GetNextJoystickInstanceID();
++        mister_pads[i].offset = (i == 0) ? MISTER_JOY_P1_OFF : MISTER_JOY_P2_OFF;
++        mister_pads[i].last_word = 0;
++        mister_npads++;
++    }
++    SDL_Log("MiSTer joystick: %d pad(s) from DDR joystick words at 0x%08X",
++            mister_npads, mister_base);
++    return 0;
++}
++
++static int MISTER_JoystickGetCount(void)
++{
++    return mister_npads;
++}
++
++static void MISTER_JoystickDetect(void)
++{
++    /* Announce the pads exactly once. Enumeration alone is not enough: an engine
++       that opens joysticks in response to SDL_JOYDEVICEADDED -- which FRT/Godot
++       does, and which is the normal SDL idiom -- never opens a device that was
++       never announced, and SDL only calls Update() for OPEN devices. The result
++       is a pad that shows up in SDL_NumJoysticks() and works when a test program
++       opens it by index, while the game itself sees nothing at all.
++       Announced from Detect rather than Init because SDL calls Detect from
++       SDL_JoystickUpdate, after init has finished wiring the device list. */
++    static SDL_bool announced;
++    int i;
++
++    if (announced || mister_npads == 0) {
++        return;
++    }
++    announced = SDL_TRUE;
++    for (i = 0; i < mister_npads; i++) {
++        SDL_PrivateJoystickAdded(mister_pads[i].instance_id);
++    }
++}
++
++static const char *MISTER_JoystickGetDeviceName(int device_index)
++{
++    return (device_index == 0) ? "MiSTer Joystick 1" : "MiSTer Joystick 2";
++}
++
++static const char *MISTER_JoystickGetDevicePath(int device_index)
++{
++    (void)device_index;
++    return NULL;
++}
++
++static int MISTER_JoystickGetDeviceSteamVirtualGamepadSlot(int device_index)
++{
++    (void)device_index;
++    return -1;
++}
++
++static int MISTER_JoystickGetDevicePlayerIndex(int device_index)
++{
++    return device_index;
++}
++
++static void MISTER_JoystickSetDevicePlayerIndex(int device_index, int player_index)
++{
++    (void)device_index;
++    (void)player_index;
++}
++
++static SDL_JoystickGUID MISTER_JoystickGetDeviceGUID(int device_index)
++{
++    /* Stable, distinctive GUID so a user-supplied mapping can target it; the
++       driver also reports a built-in mapping below, so none is required. */
++    SDL_JoystickGUID guid;
++    const char *name = MISTER_JoystickGetDeviceName(device_index);
++
++    SDL_zero(guid);
++    guid.data[0] = 'M';
++    guid.data[1] = 'I';
++    guid.data[2] = 'S';
++    guid.data[3] = 'T';
++    guid.data[4] = (Uint8)('0' + device_index);
++    SDL_memcpy(&guid.data[5], name, SDL_min(SDL_strlen(name), sizeof(guid.data) - 5));
++    return guid;
++}
++
++static SDL_JoystickID MISTER_JoystickGetDeviceInstanceID(int device_index)
++{
++    return mister_pads[device_index].instance_id;
++}
++
++static int MISTER_JoystickOpen(SDL_Joystick *joystick, int device_index)
++{
++    joystick->instance_id = mister_pads[device_index].instance_id;
++    joystick->hwdata = (struct joystick_hwdata *)(size_t)(device_index + 1);
++    joystick->nbuttons = MISTER_JOY_BUTTONS;
++    joystick->naxes = 0;
++    joystick->nhats = 1;
++    return 0;
++}
++
++static int MISTER_JoystickRumble(SDL_Joystick *joystick, Uint16 low, Uint16 high)
++{
++    (void)joystick; (void)low; (void)high;
++    return SDL_Unsupported();
++}
++
++static int MISTER_JoystickRumbleTriggers(SDL_Joystick *joystick, Uint16 left, Uint16 right)
++{
++    (void)joystick; (void)left; (void)right;
++    return SDL_Unsupported();
++}
++
++static Uint32 MISTER_JoystickGetCapabilities(SDL_Joystick *joystick)
++{
++    (void)joystick;
++    return 0;
++}
++
++static int MISTER_JoystickSetLED(SDL_Joystick *joystick, Uint8 r, Uint8 g, Uint8 b)
++{
++    (void)joystick; (void)r; (void)g; (void)b;
++    return SDL_Unsupported();
++}
++
++static int MISTER_JoystickSendEffect(SDL_Joystick *joystick, const void *data, int size)
++{
++    (void)joystick; (void)data; (void)size;
++    return SDL_Unsupported();
++}
++
++static int MISTER_JoystickSetSensorsEnabled(SDL_Joystick *joystick, SDL_bool enabled)
++{
++    (void)joystick; (void)enabled;
++    return SDL_Unsupported();
++}
++
++static void MISTER_JoystickUpdate(SDL_Joystick *joystick)
++{
++    int index = (int)(size_t)joystick->hwdata - 1;
++    MISTER_JoyDevice *pad;
++    Uint32 word, changed;
++    Uint8 hat = SDL_HAT_CENTERED;
++    static SDL_bool dbg_checked, dbg;
++    static Uint32 dbg_calls;
++
++    if (!dbg_checked) {
++        dbg_checked = SDL_TRUE;
++        dbg = SDL_GetHintBoolean("SDL_MISTER_JOY_DEBUG", SDL_FALSE);
++    }
++
++    if (index < 0 || index >= mister_npads) {
++        if (dbg && (dbg_calls++ % 240) == 0) {
++            SDL_Log("MiSTer joystick: Update called with bad index %d", index);
++        }
++        return;
++    }
++    pad = &mister_pads[index];
++    word = MISTER_ReadWord(pad->offset);
++    if (dbg && (dbg_calls++ % 240) == 0) {
++        SDL_Log("MiSTer joystick: Update #%u idx=%d off=0x%03x word=0x%08x last=0x%08x",
++                dbg_calls, index, pad->offset, word, pad->last_word);
++    }
++    changed = word ^ pad->last_word;
++    if (!changed) {
++        return;
++    }
++    if (dbg) {
++        SDL_Log("MiSTer joystick: word 0x%08x -> 0x%08x (emitting)", pad->last_word, word);
++    }
++
++    if (word & 0x1u) hat |= SDL_HAT_RIGHT;
++    if (word & 0x2u) hat |= SDL_HAT_LEFT;
++    if (word & 0x4u) hat |= SDL_HAT_DOWN;
++    if (word & 0x8u) hat |= SDL_HAT_UP;
++    SDL_PrivateJoystickHat(joystick, 0, hat);
++
++    for (int b = 0; b < MISTER_JOY_SRC_BITS; b++) {
++        Uint32 mask = 1u << (MISTER_JOY_BTN_SHIFT + b);
++        if (changed & mask) {
++            SDL_PrivateJoystickButton(joystick, mister_btn_index[b],
++                                      (word & mask) ? SDL_PRESSED : SDL_RELEASED);
++        }
++    }
++    pad->last_word = word;
++}
++
++static void MISTER_JoystickClose(SDL_Joystick *joystick)
++{
++    joystick->hwdata = NULL;
++}
++
++static void MISTER_JoystickQuit(void)
++{
++    if (mister_ddr) {
++        munmap((void *)mister_ddr, MISTER_JOY_MAP_LEN);
++        mister_ddr = NULL;
++    }
++    if (mister_mem_fd >= 0) {
++        close(mister_mem_fd);
++        mister_mem_fd = -1;
++    }
++    mister_npads = 0;
++}
++
++static SDL_bool MISTER_JoystickGetGamepadMapping(int device_index, SDL_GamepadMapping *out)
++{
++    (void)device_index;
++
++    /* Buttons follow the core's CONF_STR J1 order from bit4 up, so the first
++       four land on A/B/X/Y and the fifth on Start — which is what this core's
++       "Pause" entry is. The d-pad is the word's low four bits, reported as hat 0. */
++    out->a.kind = EMappingKind_Button;             out->a.target = 0;
++    out->b.kind = EMappingKind_Button;             out->b.target = 1;
++    out->x.kind = EMappingKind_Button;             out->x.target = 2;
++    out->y.kind = EMappingKind_Button;             out->y.target = 3;
++    out->start.kind = EMappingKind_Button;         out->start.target = 11;
++    out->back.kind = EMappingKind_Button;          out->back.target = 10;
++    out->leftshoulder.kind = EMappingKind_Button;  out->leftshoulder.target = 4;
++    out->rightshoulder.kind = EMappingKind_Button; out->rightshoulder.target = 5;
++    out->dpup.kind = EMappingKind_Hat;             out->dpup.target = 0x1;   /* hat 0, up */
++    out->dpright.kind = EMappingKind_Hat;          out->dpright.target = 0x2;
++    out->dpdown.kind = EMappingKind_Hat;           out->dpdown.target = 0x4;
++    out->dpleft.kind = EMappingKind_Hat;           out->dpleft.target = 0x8;
++    return SDL_TRUE;
++}
++
++SDL_JoystickDriver SDL_MISTER_JoystickDriver = {
++    MISTER_JoystickInit,
++    MISTER_JoystickGetCount,
++    MISTER_JoystickDetect,
++    MISTER_JoystickGetDeviceName,
++    MISTER_JoystickGetDevicePath,
++    MISTER_JoystickGetDeviceSteamVirtualGamepadSlot,
++    MISTER_JoystickGetDevicePlayerIndex,
++    MISTER_JoystickSetDevicePlayerIndex,
++    MISTER_JoystickGetDeviceGUID,
++    MISTER_JoystickGetDeviceInstanceID,
++    MISTER_JoystickOpen,
++    MISTER_JoystickRumble,
++    MISTER_JoystickRumbleTriggers,
++    MISTER_JoystickGetCapabilities,
++    MISTER_JoystickSetLED,
++    MISTER_JoystickSendEffect,
++    MISTER_JoystickSetSensorsEnabled,
++    MISTER_JoystickUpdate,
++    MISTER_JoystickClose,
++    MISTER_JoystickQuit,
++    MISTER_JoystickGetGamepadMapping,
++};
++
++#endif /* SDL_JOYSTICK_MISTER */
