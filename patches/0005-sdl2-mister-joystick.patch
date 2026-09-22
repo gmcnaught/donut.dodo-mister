@@ -158,18 +158,18 @@
 +#define MISTER_JOY_BUTTONS  12
 +
 +/* MiSTer word bit -> SDL/Godot button index. Word bit 4 is the first CONF_STR
-+   button, and the CONF_STR names them A,B,X,Y,Start,Select,L,R in that order. */
++   button; Godot indices 0-3 are POSITIONAL (bottom, right, left, top). */
 +#define MISTER_JOY_BTN_SHIFT 4
 +#define MISTER_JOY_SRC_BITS  8
 +static const Uint8 mister_btn_index[MISTER_JOY_SRC_BITS] = {
-+    0,   /* A      -> JOY_XBOX_A */
-+    1,   /* B      -> JOY_XBOX_B */
-+    2,   /* X      -> JOY_XBOX_X */
-+    3,   /* Y      -> JOY_XBOX_Y */
-+    11,  /* Start  -> JOY_START  */
-+    10,  /* Select -> JOY_SELECT */
-+    4,   /* L      -> JOY_L      */
-+    5    /* R      -> JOY_R      */
++    0,   /* Jump/OK -> bottom face */
++    1,   /* Back    -> right face  */
++    2,   /* unbound -> left face   */
++    3,   /* Options -> top face    */
++    11,  /* Start   -> JOY_START   */
++    10,  /* Select  -> JOY_SELECT  */
++    4,   /* L       -> JOY_L       */
++    5    /* R       -> JOY_R       */
 +};
 +
 +typedef struct
@@ -439,9 +439,9 @@
 +{
 +    (void)device_index;
 +
-+    /* Buttons follow the core's CONF_STR J1 order from bit4 up, so the first
-+       four land on A/B/X/Y and the fifth on Start — which is what this core's
-+       "Pause" entry is. The d-pad is the word's low four bits, reported as hat 0. */
++    /* Buttons follow the core's CONF_STR J1 order from bit4 up: the first four
++       are the face buttons by position, then Start, Select, L, R (see the
++       table above). The d-pad is the word's low four bits, reported as hat 0. */
 +    out->a.kind = EMappingKind_Button;             out->a.target = 0;
 +    out->b.kind = EMappingKind_Button;             out->b.target = 1;
 +    out->x.kind = EMappingKind_Button;             out->x.target = 2;

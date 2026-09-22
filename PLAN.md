@@ -353,7 +353,7 @@ touches the pad, so enumeration is proven and the press path is not.
 
 Still open, in rough priority order: the core still carries Maldita's CONF_STR
 button names ("Sword, Action, Item 1, Item 2, Pause"), so the OSD labels are
-wrong for this game; full-rate 48 kHz audio needs `gm_audio`'s fetch bursting;
+wrong for this game (superseded: fixed in b66bb30 and again in 1k); full-rate 48 kHz audio needs `gm_audio`'s fetch bursting;
 and the port is not yet packaged (`main=` wrapper, Scripts entry, release bundle)
 the way cursed.castilla-mister ships.
 
@@ -450,6 +450,30 @@ Maldita's launcher carries a recovery gate for; this launcher has none, so a
 wedge here is a dead picture with no way out but a manual reload. Porting that
 gate is the open item. Note the arbiter fix is claimed as landed in v0.3.2 —
 whether `DonutDodo_48k_20260823.rbf` carries it has NOT been checked.
+
+## 1k. Button mapping, end to end (2026-09-22)
+
+Every hop checked on device, so the next mapping bug starts from here:
+
+| Hop | Evidence |
+|---|---|
+| Core word | CONF_STR J1 order -> bits 4..11; `DonutDodo_48k_20260823.rbf` deployed (md5 `aa70c4ec`) |
+| SDL driver | bits 4..11 -> Godot indices 0,1,2,3,11,10,4,5; hat -> Godot 12..15 |
+| FRT/Godot | synthetic GUID is not in Godot's DB, so indices are raw; `FRTJOY` log shows 0,1,2,3,4,5,10,11 arriving |
+| Game | `conf/DonutDodoArcade/controller_mapping.dat`: jump/accept 0, cancel 1, options 3, start 11, select 10; 2/4/5 unbound |
+
+Godot's indices are **positional** (0 bottom, 1 right, 2 left, 3 top). Main_MiSTer's
+`jn` default map matches by **SNES label** (A right, B bottom, X top, Y left). The
+old `jn,A,B,X,Y,...` therefore put Jump on the right face button for any pad without
+a per-core map file, while the 8BitDo's saved `DonutDodo_input_2dc8_3106_v3.map`
+was positional (Jump on the bottom). maldita.castilla-mister `0e7ed5f` changes it to
+`jn,B,A,Y,X,Start,Select,L,R` and labels the J1 entries by what the game does
+(`Jump/OK,Back,Unused,Options,Start,Select/Coin,Unused L,Unused R`). Unused slots
+keep a name rather than `-`: Main_MiSTer skips `-` entries and shifts the names
+after one.
+
+A per-core map file overrides `jn` entirely, so an existing
+`config/inputs/DonutDodo_input_*_v3.map` keeps whatever it holds.
 
 ## 2. Architecture
 
