@@ -32,7 +32,14 @@ struct ProgramInfo {
     bool skeleton        = false;  /* USE_SKELETON  — not decoded, forces fallback */
     bool lighting        = false;  /* USE_LIGHTING  — not decoded, forces fallback */
     bool custom_fragment = false;  /* game-supplied shader code (CRT/White): fallback */
+    bool white_flash     = false;  /* Player.shader: COLOR = texel, or texel mixed 75%
+                                      toward white while uniform `white` is set */
 };
+
+/* tex_key for the pre-whitened copy of a texture (Player.shader's flash). GL
+   texture ids are small, so this bit never collides with a real one; the glue
+   invalidates it alongside the source id on every re-upload/delete. */
+constexpr uint32_t kWhiteTexKeyBit = 0x80000000u;
 
 /* A decoded draw, ready for the RasterBackend seam. */
 struct DecodedDraw {

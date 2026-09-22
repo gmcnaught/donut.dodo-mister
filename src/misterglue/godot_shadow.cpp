@@ -51,6 +51,9 @@ struct Texture {
     bool valid = false;
     bool opaque = false;
     uint32_t generation = 0;   /* bumped on re-upload: invalidates the fabric cache */
+    uint8_t *white_rgba = nullptr;  /* Player.shader flash copy, built on first use */
+    uint32_t white_gen = 0;         /* `generation` white_rgba was built from */
+    bool     white_built = false;
 };
 
 struct Fbo {
@@ -87,6 +90,8 @@ struct Program {
     float final_modulate[4] = { 1, 1, 1, 1 };
     float dst_rect[4] = {};
     float src_rect[4] = {};
+    int  loc_white = -1;       /* Player.shader's `uniform bool white` (m_white) */
+    int  white = 0;
 };
 
 /* ---- fixed-capacity tables (Godot's working set here is tiny) ------------- */
@@ -379,6 +384,12 @@ void on_shader_source(uint32_t shader, const char *src) {
                             ever misses a form we have not seen */
                          strstr(src, "aperture_grille") != nullptr ||
                          strstr(src, "white_texture_rgb") != nullptr;
+    /* Player.shader is the one game shader the fabric can reproduce: its
+       fragment is the texel (vertex colour ignored), optionally mixed 75% toward
+       white. Only the fragment half carries the body, so this is ORed in at
+       attach time and overrides custom_fragment, which the m_white uniform in
+       both halves sets. */
+    pi.white_flash     = strstr(src, "white_texture_rgb") != nullptr;
     si->info = pi;
 }
 
@@ -398,6 +409,7 @@ void on_attach_shader(uint32_t program, uint32_t shader) {
     d.skeleton        |= s.skeleton;
     d.lighting        |= s.lighting;
     d.custom_fragment |= s.custom_fragment;
+    d.white_flash     |= s.white_flash;
 }
 
 void on_use_program(uint32_t program) { g.cur_program = program; }
@@ -413,6 +425,7 @@ void on_get_uniform_location(uint32_t program, const char *name, int loc) {
     else if (!strcmp(name, "final_modulate"))    p->loc[U_FINAL_MODULATE] = loc;
     else if (!strcmp(name, "dst_rect"))          p->loc[U_DST_RECT] = loc;
     else if (!strcmp(name, "src_rect"))          p->loc[U_SRC_RECT] = loc;
+    else if (!strcmp(name, "m_white"))           p->loc_white = loc;
 }
 
 void on_uniform_matrix4fv(int loc, int count, const float *v) {
@@ -442,7 +455,12 @@ void on_uniform4f(int loc, float x, float y, float z, float w) {
     on_uniform4fv(loc, 1, v);
 }
 
-void on_uniform1i(int, int) { /* sampler bindings: unit 0 is all we decode */ }
+void on_uniform1i(int loc, int v) {
+    /* Sampler bindings are ignored (unit 0 is all we decode); the one value we
+       need is Player.shader's bool, which Godot uploads with glUniform1i. */
+    Program *p = cur_prog();
+    if (p && loc >= 0 && loc == p->loc_white) p->white = v;
+}
 
 void on_active_texture(uint32_t unit) {
     uint32_t idx = unit - 0x84C0 /* GL_TEXTURE0 */;
@@ -548,6 +566,9 @@ void on_delete_textures(int n, const uint32_t *ids) {
         if (!t) continue;
         free(t->rgba);
         t->rgba = nullptr;
+        free(t->white_rgba);
+        t->white_rgba = nullptr;
+        t->white_built = false;
         t->valid = false;
         t->generation++;
     }
@@ -677,6 +698,7 @@ bool transform_vertex(const Program *p, int index, BVtx *out) {
     float vtx[4];
     if (!read_attrib(g.attribs[ATTR_VERTEX], index, vtx)) return false;
     if (!read_attrib(g.attribs[ATTR_COLOR], index, col)) return false;
+    if (pi.white_flash) col[0] = col[1] = col[2] = col[3] = 1.0f;  /* COLOR = texel */
 
     if (pi.texture_rect) {
         /* uv = src_rect.xy + abs(src_rect.zw) * vertex   (transposed if dst_rect.z < 0)
@@ -745,7 +767,7 @@ bool common_prologue(const Program **out_p, DecodedDraw *out) {
     const Program *p = cur_prog();
     if (!p || !p->info.is_canvas) { g.st.fallback_program++; return false; }
     const ProgramInfo &pi = p->info;
-    if (pi.custom_fragment) { g.st.fallback_custom_shader++; return false; }
+    if (pi.custom_fragment && !pi.white_flash) { g.st.fallback_custom_shader++; return false; }
     if (pi.instancing || pi.skeleton || pi.lighting) { g.st.fallback_program++; return false; }
 
     bool blend_ok = false;
@@ -804,6 +826,27 @@ bool common_prologue(const Program **out_p, DecodedDraw *out) {
        app-surface texture, so it must not be hashed. Re-uploads are handled by
        invalidating the backend's cache entry, not by changing the key. */
     out->tex_key = texid;
+
+    /* Player.shader with `white` set: rgb = mix(texel, 1, 0.75), alpha kept. The
+       fabric only multiplies texel by vertex colour, so sample a pre-whitened
+       copy of the texture under its own cache key instead. */
+    if (pi.white_flash && p->white && !out->src_is_surface) {
+        if (!t->white_built || t->white_gen != t->generation || !t->white_rgba) {
+            const size_t n = (size_t)t->w * t->h;
+            uint8_t *w = (uint8_t *)realloc(t->white_rgba, n * 4);
+            if (!w) { g.st.fallback_texture++; return false; }
+            for (size_t i = 0; i < n; i++) {
+                for (int c = 0; c < 3; c++)
+                    w[i * 4 + c] = (uint8_t)((t->rgba[i * 4 + c] + 3 * 255 + 2) / 4);
+                w[i * 4 + 3] = t->rgba[i * 4 + 3];
+            }
+            t->white_rgba = w;
+            t->white_gen = t->generation;
+            t->white_built = true;
+        }
+        out->tex.rgba = t->white_rgba;
+        out->tex_key  = texid | kWhiteTexKeyBit;
+    }
     *out_p = p;
     return true;
 }

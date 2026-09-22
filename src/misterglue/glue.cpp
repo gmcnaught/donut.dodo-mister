@@ -239,16 +239,23 @@ void w_Uniform1i(int l, int v) { gs::on_uniform1i(l, v); gl.Uniform1i(l, v); }
 void w_BindTexture(unsigned t, unsigned tex) { gs::on_bind_texture(t, tex); gl.BindTexture(t, tex); }
 void w_ActiveTexture(unsigned u) { gs::on_active_texture(u); gl.ActiveTexture(u); }
 
+/* Drop the fabric's staged copy of a GL texture and of its pre-whitened twin
+   (Player.shader's flash), which is derived from the same pixels. */
+void invalidate_tex(uint32_t id) {
+    RasterBackend_MFGPU_InvalidateTex(id);
+    RasterBackend_MFGPU_InvalidateTex(id | gs::kWhiteTexKeyBit);
+}
+
 void w_TexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int b,
                   unsigned fmt, unsigned type, const void *px) {
     gs::on_tex_image2d(tgt, lvl, ifmt, w, h, b, fmt, type, px);
-    if (g_fabric) RasterBackend_MFGPU_InvalidateTex(gs::bound_texture());
+    if (g_fabric) invalidate_tex(gs::bound_texture());
     gl.TexImage2D(tgt, lvl, ifmt, w, h, b, fmt, type, px);
 }
 void w_TexSubImage2D(unsigned tgt, int lvl, int x, int y, int w, int h,
                      unsigned fmt, unsigned type, const void *px) {
     gs::on_tex_subimage2d(tgt, lvl, x, y, w, h, fmt, type, px);
-    if (g_fabric) RasterBackend_MFGPU_InvalidateTex(gs::bound_texture());
+    if (g_fabric) invalidate_tex(gs::bound_texture());
     gl.TexSubImage2D(tgt, lvl, x, y, w, h, fmt, type, px);
 }
 void w_CopyTexImage2D(unsigned tgt, int lvl, unsigned ifmt, int x, int y, int w, int h, int b) {
@@ -263,7 +270,7 @@ void w_CopyTexSubImage2D(unsigned tgt, int lvl, int xo, int yo, int x, int y, in
 void w_TexParameteri(unsigned t, unsigned p, int v) { gs::on_tex_parameteri(t, p, v); gl.TexParameteri(t, p, v); }
 void w_DeleteTextures(int n, const unsigned *ids) {
     if (g_fabric)
-        for (int i = 0; i < n; i++) RasterBackend_MFGPU_InvalidateTex(ids[i]);
+        for (int i = 0; i < n; i++) invalidate_tex(ids[i]);
     gs::on_delete_textures(n, ids);
     gl.DeleteTextures(n, ids);
 }
