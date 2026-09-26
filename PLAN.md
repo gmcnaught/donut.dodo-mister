@@ -570,6 +570,58 @@ the user loads another core (the watchdog only watches the fabric and the core n
 Residual: Maldita Castilla's launcher still does not reap `frt_3.5.2` (§1j item 1). It only matters if this
 launcher's watchdog is not running when Maldita's core loads.
 
+## 1m. Launcher and main= hook moved to mister-hybrid-platform (2026-09-26)
+
+`dist/games/DonutDodo/launch.sh`, `dist/Scripts/*.sh`, `tools/mister-wrapper/` and `tools/mem_wc/` are replaced by the
+`external/mister-hybrid-platform` submodule and `mister-port.toml`, as cash.cow.dx-mister did (its PLAN §6.28).
+`make_release.sh` renders the launcher (`platform/launch_lib.sh`), both Scripts entries, `linux/hybrid.d/DonutDodo.conf` and
+`_Other/DonutDodo.mgl`, and ships the shared `linux/MiSTer_hybrid` `main=` hook. `dist/scripts-extra.sh` deletes the old
+`games/DonutDodo/mem_wc-*.ko` (the modules now live in `platform/mem_wc/`).
+
+Carried over from the old launcher through the manifest:
+- engine argv and every exported variable (`[launch.env]`); `SDL_MISTER_JOY_BASE` now comes from the profile
+  (`$MISTER_GM_FABRIC_FB_BASE` = 0x3BF40000). The Mesa A/B switch is now `MESA_DIR` + the Mesa variables in
+  `/tmp/donutdodo_test.env` (`LD_LIBRARY_PATH` appends `$MESA_DIR` when set).
+- no CPU placement: the engine does not pin its main thread, so `cpu_isolate = false` and `engine_cpus = 3`
+  (the platform default starts the engine on CPU1 only, which suits Cash Cow's self-pinning engine, not this one).
+- the mid-game fabric-stall reload (§1l: 6 s of C_DONE frozen behind C_SUBMIT): `stall_timeout = 6`.
+  v0.2.1 had neither `engine_cpus` nor a stall watchdog; both were added on platform branch `port/donut` (`d01ce6c`),
+  which the submodule is pinned to until it is merged and tagged. `DONUTDODO_STALL_S` is now `MH_STALL_S` (test env).
+- test hook `/tmp/donutdodo_test.env` (platform default name), log paths, ready line `fabric bring-up`.
+Changed: lock and retry mark move to `/tmp/mister-hybrid/`; the launcher also refuses a core whose profile is not
+`gm-fabric`, and writes the shared engine claim file.
+
+Upgrade path: the first **Scripts → DonutDodo** run rewrites `[DonutDodo] main=…/MiSTer_DonutDodo` to
+`main=/media/fat/linux/MiSTer_hybrid` (MiSTer.ini backed up; only that section is edited) and deletes `MiSTer_DonutDodo`.
+
+Device (.81, `20260926` install + rendered files; backup in `/media/fat/backup-donut-preplatform-20260926/`):
+- (a) upgrade via the Scripts entry: `main=` migrated, wrapper and old `mem_wc-*.ko` removed, `/proc/<main>/exe` =
+  `MiSTer_hybrid`, engine up (affinity mask 3), fabric gate advancing (C_DONE +122 in 2 s), attract screen by screenshot.
+- (b) Menu core loaded: watchdog stopped the engine, `MiSTer` re-exec'd, `/tmp/mister-hybrid` empty; USB IRQ and
+  process affinities untouched (no isolation to restore).
+- (c) load via `_Other/DonutDodo.mgl`: hook started the launcher, gate passed.
+- (d) Scripts entry while running: "launch.sh already running", same engine pid.
+- (e) CoresMenu off → Scripts entry started the launcher under stock `MiSTer`; CoresMenu on again restored MiSTer.ini
+  byte-identical; the only diff against the pre-migration ini is the `[DonutDodo] main=` line (`[CashCowDX]` untouched).
+- Mid-game wedge, faked with `MH_DEVMEM` in the test env returning a frozen C_DONE: watchdog fired after 6 s, core
+  reloaded, hook started a new launcher, gate passed, retry mark cleared.
+- Engine log vs the old launcher: same messages. Both show `fabric submit timeout` / `frame dropped` lines only in the
+  window between the core change and the watchdog's kill (engine still running without the fabric).
+- Seen but not new: a `[launch.sh]` zombie under the re-exec'd stock `MiSTer` after the engine stops (the hook reaps with
+  `waitpid(WNOHANG)` only while it runs, the same code as `MiSTer_DonutDodo`). A reload helper left by the old launcher
+  from earlier testing (blocked ~2 h, would have loaded cores if it woke) was killed.
+
+Boot time, warm, interleaved, `load_core` → `MiSTer_hybrid` with only the registry `launcher=` swapped
+(`scripts/boot_time.py`; seconds from the `load_core` write):
+
+| launcher | engine exec | first frame retired | 60 frames retired |
+|---|---|---|---|
+| old `launch.sh` (runs 1–3) | 1.03 / 0.92 / 1.06 | 1.29 / 1.16 / 1.23 | 4.71 / 4.57 / 4.69 |
+| platform (runs 1–3) | 0.91 / 0.88 / 1.05 | 1.17 / 1.16 / 1.28 | 4.57 / 4.64 / 4.75 |
+
+No difference beyond run-to-run noise (60-frame means 4.66 vs 4.65 s). Unlike Cash Cow, the old Donut launcher had no
+per-process CPU pass to trim. (§1l's 5.4–5.7 s used a different end point, `/tmp/boottime.sh`, not kept.)
+
 ## 2. Architecture
 
 Same shape as the gmloader-next/cursed.castilla stack, with the engine swapped:
