@@ -475,6 +475,101 @@ after one.
 A per-core map file overrides `jn` entirely, so an existing
 `config/inputs/DonutDodo_input_*_v3.map` keeps whatever it holds.
 
+## 1l. First release packaging (2026-09-26)
+
+Packaged after cash.cow.dx-mister's 20260924c–e releases: same zip layout (`_Other/`, `Scripts/`,
+`games/DonutDodo/`), same `main=` wrapper (`tools/mister-wrapper/`, Main_MiSTer `3380931` + one hook),
+same `mem_wc` prebuilt, same launcher skeleton. `scripts/make_release.sh` builds the zip.
+
+**Provenance of every shipped binary, checked:**
+
+| File | Evidence |
+|---|---|
+| `frt_3.5.2` | the pruned engine (below): `scripts/build_engine.sh` → `work/godot-3.5.2-prune/bin/`, stripped by `make_release.sh`. The earlier full template (md5 `a898562b`, 2026-08-23) had no recorded `scons` line; the script now is that record (re-running it reports the tested binary up to date) |
+| `libSDL2-2.0.so.0` | `--strip-debug` of `work/build-sdl2/build/.libs`, now with patch 0007 (null GL, below). `work/sdl2-armhf/` is a STALE install (md5 `70aa482e`, before the §1j 0005 fix) — do not ship from it |
+| `libmisterglue.so` | clean rebuild from HEAD (`make OUT=build/rel`) is byte-identical to the device's (md5 `33ddd2aa`) |
+| `DonutDodo_20260922.rbf` | md5 `8b304178`; CI runs 35804417596 (3d853ad) and 35796838093 (82870b8) on `donutdodo/fb-320x240` both produce these bytes. The branch contains v0.3.2's arbiter fix (`f357b46`), which answers §1j item 3's open question |
+
+**Launcher changes vs. the dev launcher (`games/Donut Dodo/launch.sh`, now `dist/games/DonutDodo/launch.sh`):**
+- Lock + reap of any fabric engine (`frt_3.5.2`, `gmloader`, `cashcowdx`), core-name check, FPGA-ready wait.
+- `mem_wc` loaded if absent; the backend logs `rings+heap write-combined (/dev/mem_wc)`.
+- Engine output through a pipe (`> >(exec cat)`): `/media/fat` is mounted `sync`, and FRT's `FRTJOY`
+  per-button trace (patch 0006) would otherwise be a synchronous SD write on the main thread.
+- Start-up fabric gate as in Cash Cow DX. Here it is close to vacuous: in all runs the engine had submitted
+  only 2 frames 8 s after bring-up (still loading), so `done == submit` passes. The §1j wedge came ~2 min into
+  play, so the watchdog also checks mid-run: C_DONE unchanged and != C_SUBMIT for 6 consecutive 1 s polls ->
+  kill, reload the core, restart.
+- Watchdog stops the engine when another core loads.
+
+**Mesa leaked, so it is gone (patch 0007).** The first 30-minute soak (Mesa loaded, attract mode) held 60 fps
+but engine RSS grew linearly, 195.9 → 219.1 MB over 18 min (~1.36 MB/min, ~82 MB/h against ~270 MB available:
+an OOM after roughly 3 h). `/proc/<pid>/smaps`: all growth in `[heap]`. Walking the glibc chunk headers of a
+heap dump: the newest 12 MB were 189 in-use chunks of exactly 65,552 bytes (64 KiB + header), one every ~3 s,
+each a sparse table of 16-byte entries pointing at 40-byte nodes — llvmpipe's scene data blocks
+(`DATA_BLOCK_SIZE` 64 KiB). The glue still forwarded every GL call to Mesa, and nothing ever flushed Mesa's
+scene into a surface anyone reads. Mesa's output never reaches the scanout, so, as in Cash Cow DX 20260924e,
+it is replaced rather than fixed: with `SDL_MISTER_GLUE` set, SDL's offscreen driver loads no EGL/GL library,
+and GL entry points resolve to the glue over stubs (`SDL_mister_glue.c`) that replay what llvmpipe answered
+for a GLES2 context on the device (`work/glcaps.c` → `work/glcaps.txt`: strings, 138 extensions, limits),
+hand out unique object names, report compile/link/framebuffer success, and give each (program, uniform name)
+its own stable location (the glue routes uniform values by location). Godot 3.5's GLES2 driver only queries
+those. `SDL_MISTER_NULL_GL=0` plus `MESA_DIR` in the test env restores Mesa for A/B.
+
+Why this is safe for the picture: the draws the glue declines went to Mesa, whose output was never shown; in
+steady state the glue declines none (`fallback 0`). Only the first ~120 frames had 43 `prog` fallbacks and
+42 rejected `glCopyTexImage2D` — also invisible before.
+
+Found on the way: the work tree's `configure` carries a hand-added `SOURCES += src/audio/mister/*.c` that no
+patch recorded (a build from `patches/` alone would have had no MiSTer audio driver). Now in 0004; pristine
+SDL2 + 0001/0003/0004/0005/0007 reproduces `work/SDL2-2.32.10/` exactly.
+
+**Engine pruned, as Cash Cow DX did (no 3D, only the modules used).** The dev engine was Godot's full
+export template: 3D (49 `scene/3d` objects), Bullet, GDNative, VisualScript, WebRTC/WebSocket/ENet/UPnP,
+mbedtls, Theora/WebM/Opus, MiniMP3, CSG, GridMap, WebXR... What the pck needs, from its file list and the
+class names in its scenes/scripts (the 3D/CSG/VR/MP3 names occur only in `DefaultTheme.tres`, a theme listing
+every type): `.gdc` bytecode → `gdscript`; 2 TTFs as DynamicFont → `freetype`; 13 `.oggstr` → `stb_vorbis`;
+69 `.stex`, all WebP → `webp`; WAV `.sample` is core. First attempt without `navigation` segfaulted at start:
+in 3.5 `Navigation2DServer` requires the NavigationServer that module registers ("NavigationServer singleton
+should be initialized before the Navigation2DServer one"), so it stays. `disable_advanced_gui` stays off:
+`Options.tscn` uses `OptionButton`, and 3.5's switch also drops `MarginContainer`/`ViewportContainer`.
+There is no 3.x equivalent of Godot 4's `text_server_fb` swap: 3.5 DynamicFont is FreeType directly, no HarfBuzz/ICU.
+Stripped: 25.6 → 18.5 MB (text 25.2 → 18.2 MB). The build needs >= 8 GiB in the Docker VM at -j6.
+
+Boot, `load_core` → 60 frames retired (`/tmp/boottime.sh`; cold = `drop_caches` after the Menu load), null GL both:
+
+| Engine | Cold | Warm |
+|---|---|---|
+| full template | 8.71, 8.95 s | 5.71, 5.86 s |
+| pruned | 7.91, 8.21 s | 5.44, 5.74 s |
+
+Most of what remains is the pck: first draw comes ~3 s after fabric bring-up warm, ~5 s cold (32 MB pck, 20 MB
+of it `.oggstr` music). Pruned engine, 3-min attract: 3,597–3,599 frames/min, RSS flat at 96 MB (null GL with
+the full engine: 107 MB flat; Mesa: 196 MB and growing). Attract screens and a round checked by screenshot.
+
+**Device checks (6.18.38-MiSTer, zip extracted over `/media/fat`, `sha256sums.txt` all OK):**
+- Scripts → DonutDodo without `main=`: core up in 1 s, engine up, 601 frames retired in 10 s.
+- Load Menu under the game: watchdog stopped the engine, lock removed.
+- CoresMenu toggle: adds `[DonutDodo] main=...`; `load_core` then runs `MiSTer_DonutDodo`, which spawned `launch.sh`.
+  Toggle on/off/on checked against a scratch ini.
+- Start-up wedge (faked by a one-shot `/tmp/donutdodo_test.env` shadowing `busybox devmem` for C_DONE/C_SUBMIT):
+  gate WEDGED -> core reloaded -> wrapper started a new launcher -> gate ok -> retry marker cleared.
+- Mid-run wedge (same shadow, active after the gate's 3 reads): watchdog fired after 6 s, reload, clean restart.
+- Soaks (C_DONE deltas = frames the blitter completed): Mesa + full engine 18 min attract, 3,599–3,603/min but
+  RSS +1.36 MB/min (the leak above); null GL + full engine 11 min, 3,600–3,602/min, RSS flat 107,336 kB;
+  release zip (null GL + pruned) 7 min after one played round, 3,599–3,602/min, RSS flat 97,092 kB.
+- Release zip `20260926` re-installed and re-checked: `sha256sums.txt` all OK, core-list launch via
+  `MiSTer_DonutDodo`, startup gate (frames already flowing), watchdog stop on Menu, Scripts entry defers to `main=`.
+- Gameplay A/B, full vs pruned engine (`/tmp/playab.sh`: fresh core load, 25 s attract, injected Start, per-second
+  C_DONE for 60 s, two runs each): 3,541/3,530 vs 3,533/3,536 frames. Same dips in all four: ~13 in the round-start
+  second, 47–48/s for the 5 s round intro, ~30 in one second ~43 s in (likely the idle player's death).
+
+Open (not release blockers, present with either engine): the 5 s round intro at 47–48 fps and the ~30 fps second.
+Engine crash is not recovered: a segfault after the startup gate leaves the core up with a dead picture until
+the user loads another core (the watchdog only watches the fabric and the core name).
+
+Residual: Maldita Castilla's launcher still does not reap `frt_3.5.2` (§1j item 1). It only matters if this
+launcher's watchdog is not running when Maldita's core loads.
+
 ## 2. Architecture
 
 Same shape as the gmloader-next/cursed.castilla stack, with the engine swapped:
