@@ -1,0 +1,433 @@
+--- a/src/video/offscreen/SDL_mister_glue.c
++++ b/src/video/offscreen/SDL_mister_glue.c
+@@ -24,6 +24,9 @@
+ 
+ static void *MISTER_GLUE_RealProc(const char *proc)
+ {
++    if (MISTER_NULLGL_Enabled()) {
++        return MISTER_NULLGL_GetProcAddress(proc);
++    }
+     return mglue.device ? SDL_EGL_GetProcAddress(mglue.device, proc) : NULL;
+ }
+ 
+@@ -132,6 +135,267 @@
+     mglue.active = SDL_FALSE;
+     mglue.tried = SDL_FALSE;
+     mglue.device = NULL;
++}
++
++/* ---- null GL -------------------------------------------------------------
++   With the glue driving the fabric, Mesa's output never reaches the screen:
++   every frame the fabric shows is built by libmisterglue from the GL calls it
++   shadows. Mesa then only costs memory and time, and llvmpipe keeps binning
++   work into a scene nothing ever flushes -- 64 KiB data blocks at ~1.4 MB/min
++   of attract mode (PLAN.md 1l). With SDL_MISTER_NULL_GL on (the default when
++   SDL_MISTER_GLUE is set; =0 keeps Mesa) no EGL or GL library is loaded: GL
++   entry points resolve to the glue's wrappers, which forward to the stubs
++   below. Queries replay what Mesa llvmpipe answered on the device for a GLES2
++   context (work/glcaps.c); object names are unique counters; compile, link
++   and framebuffer status succeed; everything else is a no-op returning 0.
++   After cash.cow.dx-mister's drivers/gles3/mister_null_gl.cpp. */
++
++static const char *const NULLGL_VENDOR = "Mesa/X.org";
++static const char *const NULLGL_RENDERER = "llvmpipe (LLVM 11.0.0, 128 bits) (MiSTer null GL)";
++static const char *const NULLGL_VERSION = "OpenGL ES 3.2 Mesa 21.3.9";
++static const char *const NULLGL_GLSL = "OpenGL ES GLSL ES 3.20";
++static const char *const NULLGL_EXTENSIONS =
++    "GL_EXT_blend_minmax GL_EXT_multi_draw_arrays GL_EXT_texture_filter_anisotropic "
++    "GL_EXT_texture_compression_s3tc GL_EXT_texture_compression_dxt1 "
++    "GL_EXT_texture_compression_rgtc GL_EXT_texture_format_BGRA8888 "
++    "GL_OES_compressed_ETC1_RGB8_texture GL_OES_depth24 GL_OES_element_index_uint "
++    "GL_OES_fbo_render_mipmap GL_OES_mapbuffer GL_OES_rgb8_rgba8 GL_OES_standard_derivatives "
++    "GL_OES_stencil8 GL_OES_texture_3D GL_OES_texture_float GL_OES_texture_float_linear "
++    "GL_OES_texture_half_float GL_OES_texture_half_float_linear GL_OES_texture_npot "
++    "GL_OES_vertex_half_float GL_EXT_draw_instanced GL_EXT_texture_sRGB_decode "
++    "GL_OES_EGL_image GL_OES_depth_texture GL_OES_packed_depth_stencil "
++    "GL_EXT_texture_type_2_10_10_10_REV GL_NV_conditional_render GL_OES_get_program_binary "
++    "GL_APPLE_texture_max_level GL_EXT_discard_framebuffer GL_EXT_read_format_bgra "
++    "GL_EXT_frag_depth GL_NV_fbo_color_attachments GL_OES_EGL_image_external GL_OES_EGL_sync "
++    "GL_OES_vertex_array_object GL_OES_viewport_array GL_ANGLE_pack_reverse_row_order "
++    "GL_ANGLE_texture_compression_dxt3 GL_ANGLE_texture_compression_dxt5 "
++    "GL_EXT_occlusion_query_boolean GL_EXT_robustness GL_EXT_texture_rg GL_EXT_unpack_subimage "
++    "GL_NV_draw_buffers GL_NV_read_buffer GL_NV_read_depth GL_NV_read_depth_stencil "
++    "GL_NV_read_stencil GL_EXT_draw_buffers GL_EXT_map_buffer_range GL_KHR_debug "
++    "GL_KHR_robustness GL_KHR_texture_compression_astc_ldr GL_NV_pixel_buffer_object "
++    "GL_OES_depth_texture_cube_map GL_OES_required_internalformat GL_OES_surfaceless_context "
++    "GL_EXT_color_buffer_float GL_EXT_sRGB_write_control GL_EXT_separate_shader_objects "
++    "GL_EXT_shader_group_vote GL_EXT_shader_implicit_conversions GL_EXT_shader_integer_mix "
++    "GL_EXT_tessellation_point_size GL_EXT_tessellation_shader GL_ANDROID_extension_pack_es31a "
++    "GL_EXT_base_instance GL_EXT_compressed_ETC1_RGB8_sub_texture GL_EXT_copy_image "
++    "GL_EXT_draw_buffers_indexed GL_EXT_draw_elements_base_vertex GL_EXT_gpu_shader5 "
++    "GL_EXT_polygon_offset_clamp GL_EXT_primitive_bounding_box GL_EXT_render_snorm "
++    "GL_EXT_shader_io_blocks GL_EXT_texture_border_clamp GL_EXT_texture_buffer "
++    "GL_EXT_texture_cube_map_array GL_EXT_texture_norm16 GL_EXT_texture_view "
++    "GL_KHR_blend_equation_advanced GL_KHR_context_flush_control "
++    "GL_KHR_robust_buffer_access_behavior GL_NV_image_formats GL_OES_copy_image "
++    "GL_OES_draw_buffers_indexed GL_OES_draw_elements_base_vertex GL_OES_gpu_shader5 "
++    "GL_OES_primitive_bounding_box GL_OES_sample_shading GL_OES_sample_variables "
++    "GL_OES_shader_io_blocks GL_OES_shader_multisample_interpolation "
++    "GL_OES_tessellation_point_size GL_OES_tessellation_shader GL_OES_texture_border_clamp "
++    "GL_OES_texture_buffer GL_OES_texture_cube_map_array GL_OES_texture_stencil8 "
++    "GL_OES_texture_storage_multisample_2d_array GL_OES_texture_view "
++    "GL_EXT_blend_func_extended GL_EXT_buffer_storage GL_EXT_float_blend "
++    "GL_EXT_geometry_point_size GL_EXT_geometry_shader GL_EXT_texture_filter_minmax "
++    "GL_EXT_texture_sRGB_R8 GL_EXT_texture_sRGB_RG8 GL_KHR_no_error "
++    "GL_KHR_texture_compression_astc_sliced_3d GL_OES_EGL_image_external_essl3 "
++    "GL_OES_geometry_point_size GL_OES_geometry_shader GL_OES_shader_image_atomic "
++    "GL_EXT_clear_texture GL_EXT_clip_cull_distance GL_EXT_disjoint_timer_query "
++    "GL_EXT_texture_compression_s3tc_srgb GL_MESA_shader_integer_functions GL_EXT_clip_control "
++    "GL_EXT_color_buffer_half_float GL_EXT_memory_object GL_EXT_memory_object_fd "
++    "GL_EXT_texture_compression_bptc GL_EXT_texture_mirror_clamp_to_edge "
++    "GL_KHR_parallel_shader_compile GL_EXT_EGL_image_storage "
++    "GL_EXT_shader_framebuffer_fetch_non_coherent GL_EXT_texture_shadow_lod "
++    "GL_MESA_framebuffer_flip_y GL_EXT_depth_clamp GL_EXT_texture_query_lod GL_MESA_bgra ";
++
++static Uint32 nullgl_next_name = 1;   /* unique across object types: the glue keys textures by name */
++
++typedef struct NullGLUniform {
++    Uint32 program;
++    char *name;
++    int loc;
++} NullGLUniform;
++static NullGLUniform *nullgl_uniforms;
++static int nullgl_nuniforms, nullgl_capuniforms;
++static int nullgl_next_loc;
++
++SDL_bool MISTER_NULLGL_Enabled(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *glue = SDL_getenv("SDL_MISTER_GLUE");
++        const char *e = SDL_getenv("SDL_MISTER_NULL_GL");
++        SDL_bool glue_on = glue && *glue && SDL_strcmp(glue, "0") != 0;
++        on = (glue_on && !(e && SDL_strcmp(e, "0") == 0)) ? 1 : 0;
++    }
++    return on ? SDL_TRUE : SDL_FALSE;
++}
++
++/* Every entry point without a specific stub: no effect, returns 0. Under the
++   ARM EABI the caller owns the stack, so any signature may call it. */
++static uintptr_t nullgl_zero(void) { return 0; }
++
++static const Uint8 *nullgl_GetString(Uint32 name)
++{
++    switch (name) {
++    case 0x1F00: return (const Uint8 *)NULLGL_VENDOR;       /* GL_VENDOR */
++    case 0x1F01: return (const Uint8 *)NULLGL_RENDERER;     /* GL_RENDERER */
++    case 0x1F02: return (const Uint8 *)NULLGL_VERSION;      /* GL_VERSION */
++    case 0x1F03: return (const Uint8 *)NULLGL_EXTENSIONS;   /* GL_EXTENSIONS */
++    case 0x8B8C: return (const Uint8 *)NULLGL_GLSL;         /* GL_SHADING_LANGUAGE_VERSION */
++    default:     return (const Uint8 *)"";
++    }
++}
++
++static int nullgl_integer(Uint32 pname)
++{
++    switch (pname) {
++    case 0x0D33: /* GL_MAX_TEXTURE_SIZE */
++    case 0x0D3A: /* GL_MAX_VIEWPORT_DIMS */
++    case 0x851C: /* GL_MAX_CUBE_MAP_TEXTURE_SIZE */
++    case 0x84E8: /* GL_MAX_RENDERBUFFER_SIZE */
++        return 16384;
++    case 0x8B4C: /* GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS */
++    case 0x8872: /* GL_MAX_TEXTURE_IMAGE_UNITS */
++        return 32;
++    case 0x8B4D: /* GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS */
++        return 192;
++    case 0x8D57: /* GL_MAX_SAMPLES */
++        return 4;
++    case 0x8869: /* GL_MAX_VERTEX_ATTRIBS */
++        return 16;
++    default:
++        return 0;
++    }
++}
++
++static void nullgl_GetIntegerv(Uint32 pname, int *data)
++{
++    data[0] = nullgl_integer(pname);
++    if (pname == 0x0D3A) {   /* GL_MAX_VIEWPORT_DIMS: two values */
++        data[1] = data[0];
++    }
+ }
+ 
++static void nullgl_GetFloatv(Uint32 pname, float *data)
++{
++    data[0] = (pname == 0x84FF) ? 16.0f : (float)nullgl_integer(pname);   /* 0x84FF: MAX_TEXTURE_MAX_ANISOTROPY_EXT */
++    if (pname == 0x0D3A) {
++        data[1] = data[0];
++    }
++}
++
++static void nullgl_GetBooleanv(Uint32 pname, Uint8 *data)
++{
++    data[0] = nullgl_integer(pname) != 0;
++}
++
++static void nullgl_GenNames(int n, Uint32 *names)
++{
++    int i;
++    for (i = 0; i < n; i++) {
++        names[i] = nullgl_next_name++;
++    }
++}
++
++static Uint32 nullgl_CreateObject(void)
++{
++    return nullgl_next_name++;
++}
++
++static void nullgl_GetObjectiv(Uint32 obj, Uint32 pname, int *params)
++{
++    (void)obj;
++    /* GL_COMPILE_STATUS, GL_LINK_STATUS, GL_VALIDATE_STATUS succeed; lengths and counts are 0. */
++    params[0] = (pname == 0x8B81 || pname == 0x8B82 || pname == 0x8B83) ? 1 : 0;
++}
++
++static void nullgl_GetInfoLog(Uint32 obj, int bufsize, int *length, char *log)
++{
++    (void)obj;
++    if (length) {
++        *length = 0;
++    }
++    if (log && bufsize > 0) {
++        log[0] = 0;
++    }
++}
++
++/* One stable, unique location per (program, name): the glue maps uniform
++   values by location, so two names must never share one. */
++static int nullgl_GetUniformLocation(Uint32 program, const char *name)
++{
++    int i;
++    if (!name) {
++        return -1;
++    }
++    for (i = 0; i < nullgl_nuniforms; i++) {
++        if (nullgl_uniforms[i].program == program && SDL_strcmp(nullgl_uniforms[i].name, name) == 0) {
++            return nullgl_uniforms[i].loc;
++        }
++    }
++    if (nullgl_nuniforms == nullgl_capuniforms) {
++        int cap = nullgl_capuniforms ? nullgl_capuniforms * 2 : 256;
++        NullGLUniform *nu = (NullGLUniform *)SDL_realloc(nullgl_uniforms, cap * sizeof(*nu));
++        if (!nu) {
++            return -1;
++        }
++        nullgl_uniforms = nu;
++        nullgl_capuniforms = cap;
++    }
++    nullgl_uniforms[nullgl_nuniforms].program = program;
++    nullgl_uniforms[nullgl_nuniforms].name = SDL_strdup(name);
++    nullgl_uniforms[nullgl_nuniforms].loc = nullgl_next_loc++;
++    return nullgl_uniforms[nullgl_nuniforms++].loc;
++}
++
++static void nullgl_DeleteProgram(Uint32 program)
++{
++    int i = 0;
++    while (i < nullgl_nuniforms) {
++        if (nullgl_uniforms[i].program == program) {
++            SDL_free(nullgl_uniforms[i].name);
++            nullgl_uniforms[i] = nullgl_uniforms[--nullgl_nuniforms];
++        } else {
++            i++;
++        }
++    }
++}
++
++static Uint32 nullgl_CheckFramebufferStatus(Uint32 target)
++{
++    (void)target;
++    return 0x8CD5;   /* GL_FRAMEBUFFER_COMPLETE */
++}
++
++static const struct { const char *name; void *fn; } nullgl_entries[] = {
++    { "glGetString", (void *)nullgl_GetString },
++    { "glGetIntegerv", (void *)nullgl_GetIntegerv },
++    { "glGetFloatv", (void *)nullgl_GetFloatv },
++    { "glGetBooleanv", (void *)nullgl_GetBooleanv },
++    { "glGenBuffers", (void *)nullgl_GenNames },
++    { "glGenTextures", (void *)nullgl_GenNames },
++    { "glGenFramebuffers", (void *)nullgl_GenNames },
++    { "glGenRenderbuffers", (void *)nullgl_GenNames },
++    { "glGenVertexArraysOES", (void *)nullgl_GenNames },
++    { "glCreateProgram", (void *)nullgl_CreateObject },
++    { "glCreateShader", (void *)nullgl_CreateObject },
++    { "glDeleteProgram", (void *)nullgl_DeleteProgram },
++    { "glGetShaderiv", (void *)nullgl_GetObjectiv },
++    { "glGetProgramiv", (void *)nullgl_GetObjectiv },
++    { "glGetShaderInfoLog", (void *)nullgl_GetInfoLog },
++    { "glGetProgramInfoLog", (void *)nullgl_GetInfoLog },
++    { "glGetUniformLocation", (void *)nullgl_GetUniformLocation },
++    { "glCheckFramebufferStatus", (void *)nullgl_CheckFramebufferStatus },
++};
++
++void *MISTER_NULLGL_GetProcAddress(const char *proc)
++{
++    size_t i;
++    if (!proc) {
++        return NULL;
++    }
++    for (i = 0; i < SDL_arraysize(nullgl_entries); i++) {
++        if (SDL_strcmp(nullgl_entries[i].name, proc) == 0) {
++            return nullgl_entries[i].fn;
++        }
++    }
++    return (void *)nullgl_zero;
++}
++
+ #endif /* SDL_VIDEO_DRIVER_OFFSCREEN && SDL_VIDEO_OPENGL_EGL && __LINUX__ */
+--- a/src/video/offscreen/SDL_mister_glue.h
++++ b/src/video/offscreen/SDL_mister_glue.h
+@@ -11,6 +11,8 @@
+ extern int MISTER_GLUE_Present(void);
+ extern void MISTER_GLUE_Unload(void);
+ extern SDL_bool MISTER_GLUE_Active(void);
++extern SDL_bool MISTER_NULLGL_Enabled(void);
++extern void *MISTER_NULLGL_GetProcAddress(const char *proc);
+ 
+ #else
+ 
+@@ -19,6 +21,8 @@
+ #define MISTER_GLUE_Present()            0
+ #define MISTER_GLUE_Unload()             do { } while (0)
+ #define MISTER_GLUE_Active()             SDL_FALSE
++#define MISTER_NULLGL_Enabled()          SDL_FALSE
++#define MISTER_NULLGL_GetProcAddress(p)  NULL
+ 
+ #endif
+ #endif /* SDL_mister_glue_h_ */
+--- a/src/video/offscreen/SDL_offscreenopengles.c
++++ b/src/video/offscreen/SDL_offscreenopengles.c
+@@ -30,9 +30,20 @@
+ 
+ /* EGL implementation of SDL OpenGL support */
+ 
++/* A non-NULL context handle for null-GL mode (see SDL_mister_glue.c). */
++static int nullgl_context;
++
+ int OFFSCREEN_GLES_LoadLibrary(_THIS, const char *path)
+ {
+-    int ret = SDL_EGL_LoadLibraryOnly(_this, path);
++    int ret;
++
++    /* MiSTer null GL: no EGL or GL library at all. */
++    if (MISTER_NULLGL_Enabled()) {
++        SDL_Log("MiSTer: null GL -- no EGL/GL library loaded; the fabric draws every frame");
++        return 0;
++    }
++
++    ret = SDL_EGL_LoadLibraryOnly(_this, path);
+     if (ret != 0) {
+         return ret;
+     }
+@@ -72,6 +83,9 @@
+     OFFSCREEN_Window *offscreen_window = window->driverdata;
+ 
+     SDL_GLContext context;
++    if (MISTER_NULLGL_Enabled()) {
++        return (SDL_GLContext)&nullgl_context;
++    }
+     context = SDL_EGL_CreateContext(_this, offscreen_window->egl_surface);
+ 
+     return context;
+@@ -79,6 +93,9 @@
+ 
+ int OFFSCREEN_GLES_MakeCurrent(_THIS, SDL_Window *window, SDL_GLContext context)
+ {
++    if (MISTER_NULLGL_Enabled()) {
++        return 0;
++    }
+     if (window) {
+         EGLSurface egl_surface = ((OFFSCREEN_Window *)window->driverdata)->egl_surface;
+         return SDL_EGL_MakeCurrent(_this, egl_surface, context);
+@@ -96,7 +113,7 @@
+        the glue can resolve the Mesa entry points it falls back to. */
+     MISTER_GLUE_Load(_this);
+ 
+-    real  = SDL_EGL_GetProcAddress(_this, proc);
++    real  = MISTER_NULLGL_Enabled() ? MISTER_NULLGL_GetProcAddress(proc) : SDL_EGL_GetProcAddress(_this, proc);
+     glued = MISTER_GLUE_Resolve(proc, real);   /* fabric path, or `real` */
+     return MISTER_DDR_WrapProc(proc, glued);   /* profiling wrapper on top */
+ }
+@@ -112,10 +129,37 @@
+     if (!MISTER_GLUE_Present()) {
+         MISTER_DDR_PresentGL(_this, window->w, window->h);
+     }
++    if (MISTER_NULLGL_Enabled()) {
++        return 0;
++    }
+ 
+     return SDL_EGL_SwapBuffers(_this, offscreen_wind->egl_surface);
+ }
+ 
++int OFFSCREEN_GLES_SetSwapInterval(_THIS, int interval)
++{
++    if (MISTER_NULLGL_Enabled()) {
++        return 0;   /* pacing is the glue's (scanout-locked) */
++    }
++    return SDL_EGL_SetSwapInterval(_this, interval);
++}
++
++int OFFSCREEN_GLES_GetSwapInterval(_THIS)
++{
++    if (MISTER_NULLGL_Enabled()) {
++        return 1;
++    }
++    return SDL_EGL_GetSwapInterval(_this);
++}
++
++void OFFSCREEN_GLES_DeleteContext(_THIS, SDL_GLContext context)
++{
++    if (MISTER_NULLGL_Enabled()) {
++        return;
++    }
++    SDL_EGL_DeleteContext(_this, context);
++}
++
+ #endif /* SDL_VIDEO_DRIVER_OFFSCREEN && SDL_VIDEO_OPENGL_EGL */
+ 
+ /* vi: set ts=4 sw=4 expandtab: */
+--- a/src/video/offscreen/SDL_offscreenopengles.h
++++ b/src/video/offscreen/SDL_offscreenopengles.h
+@@ -29,15 +29,15 @@
+ #include "../SDL_egl_c.h"
+ 
+ #define OFFSCREEN_GLES_UnloadLibrary   SDL_EGL_UnloadLibrary
+-#define OFFSCREEN_GLES_GetSwapInterval SDL_EGL_GetSwapInterval
+-#define OFFSCREEN_GLES_SetSwapInterval SDL_EGL_SetSwapInterval
+-#define OFFSCREEN_GLES_DeleteContext   SDL_EGL_DeleteContext
+ 
+ extern int OFFSCREEN_GLES_LoadLibrary(_THIS, const char *path);
+ extern SDL_GLContext OFFSCREEN_GLES_CreateContext(_THIS, SDL_Window *window);
+ extern int OFFSCREEN_GLES_MakeCurrent(_THIS, SDL_Window *window, SDL_GLContext context);
+ extern int OFFSCREEN_GLES_SwapWindow(_THIS, SDL_Window *window);
+ extern void *OFFSCREEN_GLES_GetProcAddress(_THIS, const char *proc);
++extern int OFFSCREEN_GLES_SetSwapInterval(_THIS, int interval);
++extern int OFFSCREEN_GLES_GetSwapInterval(_THIS);
++extern void OFFSCREEN_GLES_DeleteContext(_THIS, SDL_GLContext context);
+ 
+ #endif /* SDL_VIDEO_DRIVER_OFFSCREEN && SDL_VIDEO_OPENGL_EGL */
+ 
+--- a/src/video/offscreen/SDL_offscreenwindow.c
++++ b/src/video/offscreen/SDL_offscreenwindow.c
+@@ -24,6 +24,7 @@
+ 
+ #include "../SDL_sysvideo.h"
+ #include "../SDL_egl_c.h"
++#include "SDL_mister_glue.h"
+ 
+ #include "SDL_offscreenwindow.h"
+ 
+@@ -48,7 +49,9 @@
+     offscreen_window->sdl_window = window;
+ 
+ #ifdef SDL_VIDEO_OPENGL_EGL
+-    if (window->flags & SDL_WINDOW_OPENGL) {
++    if ((window->flags & SDL_WINDOW_OPENGL) && MISTER_NULLGL_Enabled()) {
++        offscreen_window->egl_surface = EGL_NO_SURFACE;   /* null GL: no EGL */
++    } else if (window->flags & SDL_WINDOW_OPENGL) {
+ 
+         if (!_this->egl_data) {
+             return SDL_SetError("Cannot create an OPENGL window invalid egl_data");

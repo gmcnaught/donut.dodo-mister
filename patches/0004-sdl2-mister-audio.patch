@@ -292,3 +292,13 @@
 +};
 +
 +#endif /* SDL_misteraudio_h_ */
+--- a/configure
++++ b/configure
+@@ -20304,6 +20304,7 @@
+ SOURCES="$SOURCES $srcdir/src/*.c"
+ SOURCES="$SOURCES $srcdir/src/atomic/*.c"
+ SOURCES="$SOURCES $srcdir/src/audio/*.c"
++SOURCES="$SOURCES $srcdir/src/audio/mister/*.c"
+ SOURCES="$SOURCES $srcdir/src/cpuinfo/*.c"
+ SOURCES="$SOURCES $srcdir/src/dynapi/*.c"
+ SOURCES="$SOURCES $srcdir/src/events/*.c"
