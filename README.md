@@ -42,10 +42,11 @@ The user guide (controls, logs, notes) is [`dist/README.md`](dist/README.md), wh
 | `src/misterglue/` | The GL glue module (`libmisterglue.so`) — Godot GLES2 state shadow + draw decode |
 | `src/vendor/` | The fabric stack shared with gmloader-next / maldita.castilla-mister — see `src/vendor/VENDOR.md` |
 | `patches/` | Our diffs against upstream SDL2 and FRT, with the pinned versions — see `patches/README.md` |
-| `dist/` | What ships: `games/DonutDodo/launch.sh`, the two `Scripts/` entries, the user README |
-| `tools/mister-wrapper/` | `MiSTer_DonutDodo`: upstream Main_MiSTer plus one hook that starts `launch.sh` on core load (`main=`) |
-| `tools/mem_wc/` | Write-combining `/dev/mem_wc` driver (GPL-2.0) and its prebuilt module for 6.18.38-MiSTer |
+| `mister-port.toml` | Launcher and device-file manifest, rendered by the platform (`scripts/make_release.sh`): `games/DonutDodo/launch.sh` + `platform/`, the two `Scripts/` entries, `linux/hybrid.d/DonutDodo.conf`, `_Other/DonutDodo.mgl` |
+| `dist/` | User README, `scripts-extra.sh` (upgrade clean-up rendered into the Scripts entry) |
+| `external/mister-hybrid-platform/` | Submodule: launcher library, the shared `MiSTer_hybrid` `main=` hook, `mem_wc` driver (GPL-2.0), DDR-map spec |
 | `scripts/make_release.sh` | Assembles the release zip |
+| `scripts/boot_time.py` | Device: time `load_core` → engine exec → 60 frames retired (PLAN §1m) |
 | `scripts/deploy_and_verify.sh` | Push an RBF, reconfigure, screenshot |
 | `Makefile` | Cross-builds `libmisterglue.so` (armhf, Cortex-A9) |
 | `Dockerfile.frt-build` | The armhf cross image used for SDL2 and the engine |
@@ -62,12 +63,12 @@ Requirements: Docker with the `gmloader-armhf-build:bullseye` image (from gmload
 | Engine | Godot 3.5.2-stable + FRT `33f739d` + patches 0002, 0006, built by `scripts/build_engine.sh` (no 3D, 5 modules) | `work/godot-3.5.2-prune/bin/godot.frt.opt.arm32v7` |
 | SDL2 | SDL2 2.32.10 + patches 0001, 0003–0005, 0007 | `work/build-sdl2/build/.libs/libSDL2-2.0.so.0.3200.10` |
 | Glue | `src/`, rebuilt by the release script | `build/rel/libmisterglue.so` |
-| Wrapper | `tools/mister-wrapper/build-hps.sh` | `build/mister-wrapper/MiSTer_DonutDodo` |
+| `main=` hook | `external/mister-hybrid-platform/device/main-hook/build-hps.sh` (or the platform CI artifact) | `external/mister-hybrid-platform/build/main-hook/MiSTer_hybrid` (`HOOK_BIN=`) |
 | Core | maldita.castilla-mister branch `donutdodo/fb-320x240`, `build-rbf.yml`, default `core_variant` | `RBF_SRC=` |
 
 ```sh
 scripts/build_engine.sh                     # Docker VM needs >= 8 GiB at -j6
-tools/mister-wrapper/build-hps.sh
+external/mister-hybrid-platform/device/main-hook/build-hps.sh   # MiSTer_hybrid
 RBF_SRC=_Other/DonutDodo_48k_v224_20260922.rbf scripts/make_release.sh <tag>
 # -> build/release/DonutDodo-MiSTer-<tag>.zip, checksums in games/DonutDodo/sha256sums.txt
 ```
@@ -75,8 +76,10 @@ RBF_SRC=_Other/DonutDodo_48k_v224_20260922.rbf scripts/make_release.sh <tag>
 
 ## Measuring on the device
 
-`launch.sh` sources `/tmp/donutdodo_test.env` if it exists (gone after a reboot). For example
+`launch.sh` (the platform's `launch_lib.sh`) sources `/tmp/donutdodo_test.env` if it exists (gone after a reboot). For example
 `echo 'export MISTER_GLUE_STATS=1' > /tmp/donutdodo_test.env` logs draw/decode/fallback counts every 120 frames.
+Launcher settings can be overridden there too, e.g. `MH_STALL_S=0` turns off the mid-game fabric-stall reload.
+The engine's own variables (`SDL_MISTER_*`, `LD_LIBRARY_PATH`, ...) are set after it from `mister-port.toml`.
 
 ## Licence
 

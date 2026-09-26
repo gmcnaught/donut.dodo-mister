@@ -1,0 +1,53 @@
+# Donut Dodo device files, rendered by mister-hybrid-platform:
+#   python3 external/mister-hybrid-platform/tools/mister_platform.py render mister-port.toml --out <sd-root>
+# (scripts/make_release.sh does this). Generated: games/DonutDodo/launch.sh +
+# platform/, Scripts/DonutDodo{,_CoresMenu}.sh, linux/hybrid.d/DonutDodo.conf,
+# linux/MiSTer_hybrid, _Other/DonutDodo.mgl.
+[port]
+name     = "DonutDodo"
+title    = "Donut Dodo"
+profile  = "gm-fabric"
+engine   = "godot3-frt"
+
+[launch]
+# Kept as frt_3.5.2: the other fabric ports' launchers reap this name.
+process       = "frt_3.5.2"
+command       = ["./frt_3.5.2", "--main-pack", "gamedata/DonutDodo.pck", "--video-driver", "GLES2"]
+ready_pattern = "fabric bring-up"
+# The engine does not pin its main thread to CPU0, so it keeps both CPUs and the
+# launcher moves nothing (the pre-platform launcher had no CPU placement).
+cpu_isolate   = false
+engine_cpus   = 3
+# Fabric wedge mid-game -> reload the core (PLAN.md §1j: C_DONE frozen behind
+# C_SUBMIT ~2 min into play after a clean start). Override: MH_STALL_S in
+# /tmp/donutdodo_test.env.
+stall_timeout = 6
+
+[launch.env]
+# GL is a null implementation inside our libSDL2 (patch 0007): no Mesa is loaded.
+# A/B only: /tmp/donutdodo_test.env with MESA_DIR=<llvmpipe runtime> and
+# SDL_MISTER_NULL_GL=0, SDL_VIDEO_EGL_DEFAULT_DISPLAY=1, EGL_PLATFORM=surfaceless,
+# LIBGL_DRIVERS_PATH=$MESA_DIR, GALLIUM_DRIVER=llvmpipe exported (PLAN.md §1l).
+LD_LIBRARY_PATH     = "$MH_GAMEDIR/libs${MESA_DIR:+:$MESA_DIR}"
+SDL_VIDEODRIVER     = "offscreen"        # no DRM/KMS device on MiSTer
+# Scanout geometry is the core's wire contract: must match the RBF's FB_W/FB_H
+# and the host's BLT_FB_WIDTH/HEIGHT.
+SDL_MISTER_SCANOUT  = "320x240"
+SDL_MISTER_DDR      = "0"                # the fabric publishes frames, not our readback
+# The FPGA drains a DDR audio ring; gm_audio SRC_RATE must equal the driver's 48 kHz.
+SDL_AUDIODRIVER     = "mister"
+# The core's published joystick words, so the OSD button mapping is what the game sees.
+SDL_MISTER_JOY          = "1"
+SDL_MISTER_JOY_PLAYERS  = "1"
+SDL_MISTER_JOY_BASE     = "$MISTER_GM_FABRIC_FB_BASE"   # 0x3BF40000 (Maldita.sv FB_QW_BASE)
+SDL_MISTER_GLUE     = "1"
+MISTER_GLUE_FABRIC  = "1"
+GMLOADER_RASTER     = "mfgpu"            # the fabric back-end over the CPU one
+GODOT_SILENCE_ROOT_WARNING = "1"
+XDG_CONFIG_HOME     = "$MH_GAMEDIR/conf"
+XDG_DATA_HOME       = "$MH_GAMEDIR/conf"
+
+[scripts]
+required_files = [ ["gamedata/DonutDodo.pck", "copy it from your itch.io download (see README.md)"] ]
+legacy_main    = ["/media/fat/games/DonutDodo/MiSTer_DonutDodo"]
+extra          = "dist/scripts-extra.sh"
