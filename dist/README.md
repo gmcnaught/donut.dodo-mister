@@ -13,24 +13,29 @@ https://zapposh.itch.io/donut-dodo-retropie-edition.
    - `Scripts/DonutDodo.sh` — loads the core and starts the game
    - `Scripts/DonutDodo_CoresMenu.sh` — turns on starting the game from the core list (step 3)
    - `_Other/DonutDodo.mgl` — a core-list entry that always loads the newest `DonutDodo_*.rbf`
-   - `linux/MiSTer_hybrid` and `linux/hybrid.d/DonutDodo.conf` — starts the game on core load (step 3)
-   - `games/DonutDodo/` — the engine, its runtime, the launcher, this README and `sha256sums.txt`
+   - `games/DonutDodo/` — the engine, its runtime, the launcher, this README and `sha256sums.txt`;
+     `games/DonutDodo/platform/MiSTer_hybrid` and `platform/hybrid.d/DonutDodo.conf` start the game on core load (step 3)
      (verify the copy: FAT filesystems can silently truncate files on an interrupted copy)
 2. Copy **`DonutDodo.pck`** from the RetroPie Edition download (`DonutDodo/gamedata/DonutDodo.pck`) to
    `/media/fat/games/DonutDodo/gamedata/DonutDodo.pck`.
    - The file this port was tested with has SHA-256 `b5b9cc58ef3d767d70cc3290924b5b34ef58caa8ef033b617db6e4530ee2b78d`.
 3. Run **Scripts → DonutDodo_CoresMenu** once. It adds a `[DonutDodo]` section to `/media/fat/MiSTer.ini`
-   (backed up first to `MiSTer.ini.bak.<time>`) with `main=/media/fat/linux/MiSTer_hybrid`.
+   (backed up first to `MiSTer.ini.bak.<time>`) with `main=/media/fat/games/DonutDodo/platform/MiSTer_hybrid`.
    From then on, loading **DonutDodo** from the core list (`_Other`) starts the game. Run it again to turn this off.
    - `main=` is MiSTer's per-core setting for which MiSTer program runs while that core is loaded.
      `MiSTer_hybrid` is the standard MiSTer program plus one addition that starts the game once the core is up
-     (it reads `linux/hybrid.d/` and is shared with other ports that use the same platform);
+     (it reads `hybrid.d/` next to itself, so it only knows about DonutDodo);
      every other core keeps using your normal, updated `/media/fat/MiSTer`. No background service is installed.
 4. **Scripts → DonutDodo** also starts the game, with or without step 3.
 
-Upgrading from an earlier release: run **Scripts → DonutDodo** once. It moves an existing `[DonutDodo] main=` line from
-`games/DonutDodo/MiSTer_DonutDodo` to `linux/MiSTer_hybrid` (backing up `MiSTer.ini`) and deletes `MiSTer_DonutDodo`
-and the old `games/DonutDodo/mem_wc-*.ko`.
+Upgrading from an earlier release: extract the new zip, then run **Scripts → DonutDodo** once (or run
+**Scripts → DonutDodo_CoresMenu** again). It moves an existing `[DonutDodo] main=` line to
+`/media/fat/games/DonutDodo/platform/MiSTer_hybrid` (backing up `MiSTer.ini`):
+- from 20260926/20260926b (`main=/media/fat/linux/MiSTer_hybrid`): it also removes `linux/hybrid.d/DonutDodo.conf`,
+  and deletes `linux/MiSTer_hybrid` once no other `MiSTer.ini` section uses it.
+  Until you do this, the old `linux/MiSTer_hybrid` keeps starting the game.
+- from earlier releases (`games/DonutDodo/MiSTer_DonutDodo`): it also deletes `MiSTer_DonutDodo` and the old
+  `games/DonutDodo/mem_wc-*.ko`.
 
 To quit, load another core from the OSD; the launcher stops the game when the core changes.
 
