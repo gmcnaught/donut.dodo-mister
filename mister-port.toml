@@ -1,8 +1,8 @@
 # Donut Dodo device files, rendered by mister-hybrid-platform:
 #   python3 external/mister-hybrid-platform/tools/mister_platform.py render mister-port.toml --out <sd-root>
 # (scripts/make_release.sh does this). Generated: games/DonutDodo/launch.sh +
-# platform/, Scripts/DonutDodo{,_CoresMenu}.sh, linux/hybrid.d/DonutDodo.conf,
-# linux/MiSTer_hybrid, _Other/DonutDodo.mgl.
+# platform/ (incl. platform/MiSTer_hybrid with --hook-binary, and
+# platform/hybrid.d/DonutDodo.conf), Scripts/DonutDodo{,_CoresMenu}.sh, _Other/DonutDodo.mgl.
 [port]
 name     = "DonutDodo"
 title    = "Donut Dodo"

@@ -42,9 +42,9 @@ The user guide (controls, logs, notes) is [`dist/README.md`](dist/README.md), wh
 | `src/misterglue/` | The GL glue module (`libmisterglue.so`) — Godot GLES2 state shadow + draw decode |
 | `src/vendor/` | The fabric stack shared with gmloader-next / maldita.castilla-mister — see `src/vendor/VENDOR.md` |
 | `patches/` | Our diffs against upstream SDL2 and FRT, with the pinned versions — see `patches/README.md` |
-| `mister-port.toml` | Launcher and device-file manifest, rendered by the platform (`scripts/make_release.sh`): `games/DonutDodo/launch.sh` + `platform/`, the two `Scripts/` entries, `linux/hybrid.d/DonutDodo.conf`, `_Other/DonutDodo.mgl` |
+| `mister-port.toml` | Launcher and device-file manifest, rendered by the platform (`scripts/make_release.sh`): `games/DonutDodo/launch.sh` + `platform/`, `platform/MiSTer_hybrid` and `platform/hybrid.d/DonutDodo.conf`, the two `Scripts/` entries, `_Other/DonutDodo.mgl`. Nothing is installed under `linux/` |
 | `dist/` | User README, `scripts-extra.sh` (upgrade clean-up rendered into the Scripts entry) |
-| `external/mister-hybrid-platform/` | Submodule: launcher library, the shared `MiSTer_hybrid` `main=` hook, `mem_wc` driver (GPL-2.0), DDR-map spec |
+| `external/mister-hybrid-platform/` | Submodule: launcher library, the `MiSTer_hybrid` `main=` hook (shipped per port in `games/DonutDodo/platform/`), `mem_wc` driver (GPL-2.0), DDR-map spec |
 | `scripts/make_release.sh` | Assembles the release zip |
 | `scripts/boot_time.py` | Device: time `load_core` → engine exec → 60 frames retired (PLAN §1m) |
 | `scripts/deploy_and_verify.sh` | Push an RBF, reconfigure, screenshot |
@@ -63,7 +63,7 @@ Requirements: Docker with the `gmloader-armhf-build:bullseye` image (from gmload
 | Engine | Godot 3.5.2-stable + FRT `33f739d` + patches 0002, 0006, built by `scripts/build_engine.sh` (no 3D, 5 modules) | `work/godot-3.5.2-prune/bin/godot.frt.opt.arm32v7` |
 | SDL2 | SDL2 2.32.10 + patches 0001, 0003–0005, 0007 | `work/build-sdl2/build/.libs/libSDL2-2.0.so.0.3200.10` |
 | Glue | `src/`, rebuilt by the release script | `build/rel/libmisterglue.so` |
-| `main=` hook | `external/mister-hybrid-platform/device/main-hook/build-hps.sh` (or the platform CI artifact) | `external/mister-hybrid-platform/build/main-hook/MiSTer_hybrid` (`HOOK_BIN=`) |
+| `main=` hook | `external/mister-hybrid-platform/device/main-hook/build-hps.sh` (or the platform CI artifact) | `external/mister-hybrid-platform/build/main-hook/MiSTer_hybrid` (`HOOK_BIN=`; must be platform v0.4.0 or later) |
 | Core | maldita.castilla-mister branch `donutdodo/fb-320x240`, `build-rbf.yml`, default `core_variant` | `RBF_SRC=` |
 
 ```sh
@@ -71,6 +71,7 @@ scripts/build_engine.sh                     # Docker VM needs >= 8 GiB at -j6
 external/mister-hybrid-platform/device/main-hook/build-hps.sh   # MiSTer_hybrid
 RBF_SRC=_Other/DonutDodo_48k_v224_20260922.rbf scripts/make_release.sh <tag>
 # -> build/release/DonutDodo-MiSTer-<tag>.zip, checksums in games/DonutDodo/sha256sums.txt
+#    fails if the zip has anything outside games/DonutDodo/, Scripts/, _Other/
 ```
 
 
