@@ -33,6 +33,18 @@ SDL_VIDEODRIVER     = "offscreen"        # no DRM/KMS device on MiSTer
 # Scanout geometry is the core's wire contract: must match the RBF's FB_W/FB_H
 # and the host's BLT_FB_WIDTH/HEIGHT.
 SDL_MISTER_SCANOUT  = "320x240"
+# Safe area (src/misterglue/safe_area.h): with OSD Vertical Lines = 224 the core
+# scans out rows 7-230 of the 240-line frame, so the final picture is scaled into
+# that window by default instead of losing its top and bottom; with 240 it shows
+# the whole frame and "fit" is 1:1. MISTER_GLUE_OSD_LINES=1 reads the OSD choice
+# back from the core (C_STATUS bit2) every frame; MISTER_GLUE_VISIBLE must match
+# the RBF's short window (`DISP_H/`DISP_Y0). A user's games/DonutDodo/display.cfg
+# (safe_area=...) overrides MISTER_GLUE_SAFE_AREA; it is not shipped, so a release
+# never overwrites it.
+MISTER_GLUE_VISIBLE        = "320x224+0+7"
+MISTER_GLUE_OSD_LINES      = "1"
+MISTER_GLUE_SAFE_AREA      = "fit"
+MISTER_GLUE_SAFE_AREA_FILE = "$MH_GAMEDIR/display.cfg"
 SDL_MISTER_DDR      = "0"                # the fabric publishes frames, not our readback
 # The FPGA drains a DDR audio ring; gm_audio SRC_RATE must equal the driver's 48 kHz.
 SDL_AUDIODRIVER     = "mister"

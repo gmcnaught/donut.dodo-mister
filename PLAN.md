@@ -622,6 +622,44 @@ Boot time, warm, interleaved, `load_core` → `MiSTer_hybrid` with only the regi
 No difference beyond run-to-run noise (60-frame means 4.66 vs 4.65 s). Unlike Cash Cow, the old Donut launcher had no
 per-process CPU pass to trim. (§1l's 5.4–5.7 s used a different end point, `/tmp/boottime.sh`, not kept.)
 
+## 1n. Safe area: fitting the picture to the visible lines (2026-10-12)
+
+**Problem.** Top and bottom of the game cut off on both HDMI and CRT. Two causes stack: the core scans out only rows
+7–230 of the 240-line frame (Genesis V28, §1 open item, `dist/README.md`), and the display's own overscan hides more.
+The game does not keep its HUD inside a 224-line safe area.
+
+**Fix (software side).** The glue scales the final picture into a configurable rect (`src/misterglue/safe_area.h`,
+`glue.cpp` `safe_area_init`/`safe_area_apply`). Only draws into the default framebuffer are remapped — on Godot that is
+the single composite of the viewport render target — so the game still renders its 320×240 surface at native size and
+the cost is one smaller composite plus, when the engine did not clear the default framebuffer that frame, a black clear
+for the border (the backend emits it: `mf_pc_is_cover` no longer proves a shrunk composite covers the screen, which is
+the correct outcome). Default `fit` = 299×224+10+7 inside the core's 320×224+0+7 window; `crt` = 269×202+25+18.
+
+Config: `MISTER_GLUE_VISIBLE` (the core's window, must track the RBF), `MISTER_GLUE_SAFE_AREA` (port default),
+`games/DonutDodo/display.cfg` `safe_area=` (user, wins). Host test: `make test`.
+
+**Cost.** 240→224 is a non-integer minification; the composite samples the app surface point-sampled, so about one row
+in 15 (and one column in 15) is dropped, which can shimmer on scrolling pixel art. `off` restores 1:1.
+
+**Not yet verified on device.** Needs a run checking: the log line, the picture inside the core screenshot with black
+bars, C_DONE pace unchanged at 60 fps (the extra border fill is ~77k px), and no stale pixels in the border.
+
+**Core side: OSD Vertical Lines = 224 / 240** (maldita.castilla-mister, branch `claude/vertical-240-osd` off
+`donutdodo/fb-320x240`). `status[18]` (free since the old 224p crop option was removed) selects the scanout window:
+224 = the unchanged V28 window (rows 7–230, FP 11 / sync 3 / BP 24), 240 = all rows with the 16 extra lines taken 8
+from each porch (FP 3 / sync 3 / BP 16), so vsync keeps its place relative to the picture centre, the total stays 262
+lines and a CRT does not re-lock. The timing samples the option at the end of active video (`v_full_next`) and adopts
+it at the frame wrap; the reader latches it where it restarts a frame (inside vblank), so no frame mixes geometries.
+The fabric mirrors the raw level into `C_STATUS` low32 bit2 each frame; the glue maps the control page read-only
+(`MISTER_GLUE_OSD_LINES=1`) and re-resolves the safe area between frames when it changes, so the OSD choice and the
+safe area cannot disagree. Older cores leave the bit 0, which is the 224 window: the right answer for them. Default
+stays 224 (unchanged for CRT users and for the Cash Cow DX build of the same RTL).
+
+Sims (Icarus): new `tb_video_timing_vfull` (both modes, mid-frame/vblank switch requests, vsync placement, v_adj
+−3..+3; a mid-frame-switch mutation fails it), new `tb_reader_ddr_v240` (the full reader bench with fetches from row
+0 for 240 rows), and `tb_reader_ddr`, `tb_f2h_slot_mux`, `tb_ddr_blitter_arb` unchanged and passing. Needs an RBF
+build (CI) and a device check: screenshot height 240 in 240 mode, CRT lock across a toggle, the glue log line.
+
 ## 2. Architecture
 
 Same shape as the gmloader-next/cursed.castilla stack, with the engine swapped:

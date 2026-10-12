@@ -48,9 +48,34 @@ top face = Options. The D-pad moves.
 
 A mapping you saved for this core earlier (`config/inputs/DonutDodo_input_*.map`) takes precedence over the default.
 
+## Picture size
+
+On HDMI, first set **OSD → Vertical Lines** to **240**: the whole picture is then shown pixel for pixel. If the top or
+bottom is still cut off (a CRT, or a TV that overscans), or you want a different size, create
+`games/DonutDodo/display.cfg` with one line, then restart the game:
+
+    safe_area = fit
+
+| Value | Picture |
+|---|---|
+| `fit` (default) | The whole game in the lines the core shows: pixel for pixel at Vertical Lines 240; scaled to 224 lines, with thin black bars at the sides, at 224 |
+| `crt` | 90% of `fit`, for a CRT that hides the edges of the picture (same as `90%`) |
+| `NN%` | `fit` scaled to NN% (1–100), e.g. `85%` for a CRT with a lot of overscan |
+| `stretch` | Full width, squashed vertically into the 224 lines (no side bars) |
+| `off` | Unscaled, pixel for pixel: at Vertical Lines 224 the top 7 and bottom 9 lines are not shown |
+| `WxH` or `WxH+X+Y` | An exact size (and position) in the game's 320×240 pixels, e.g. `288x216` |
+
+The sizes follow the Vertical Lines option (`crt` is 90% of whichever window the core shows). Any scaled setting is a
+little softer than pixel for pixel on fine pixel art, because 240 lines are drawn into fewer. The setting
+in use is logged at start-up in `donutdodo.log` (`misterglue: safe area ...`). An invalid value is logged and the
+picture is shown unscaled. The file is yours: installing a new release does not replace it.
+
 ## Notes
 
-- The core shows the 224 lines a CRT displays (rows 7–230 of the game's 240).
+- **OSD → Vertical Lines** picks how many of the game's 240 lines the core sends to the display: **224** (default; rows
+  7–230, the lines a consumer CRT shows) or **240** (the whole picture; best for HDMI). With 224 the game's picture is
+  scaled down slightly to fit, so nothing at the top or bottom is cut off; see **Picture size** below. The change takes
+  effect immediately.
 - Saves and settings go to `games/DonutDodo/conf/`.
 - Logs: `/media/fat/logs/DonutDodo/` (`launch.log`, `donutdodo.log`, and `donutdodo.prev.log` from the previous run).
 - `platform/mem_wc/mem_wc-<kernel>.ko` gives the blitter a faster (write-combining) DDR mapping. It is loaded only if it matches the
