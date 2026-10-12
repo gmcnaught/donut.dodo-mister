@@ -213,6 +213,7 @@ bool read_cfg_safe_area(const char *path, char *val, size_t val_sz) {
 struct SafeAreaCfg {
     int  fb_w = 0, fb_h = 0;
     safe_area::Rect window{0, 0, 0, 0};   /* MISTER_GLUE_VISIBLE: the core's short window */
+    safe_area::Ratio dar{0, 0};           /* MISTER_GLUE_DAR: how the core shows the window */
     char spec[64] = "off";
     const char *src = "default";
     int  full = -1;                       /* the mode the rect was last resolved for */
@@ -249,7 +250,7 @@ void safe_area_set_mode(bool full) {
     const safe_area::Rect vis = full ? safe_area::Rect{0, 0, fb_w, fb_h} : g_sa.window;
     safe_area::Rect r;
     const char *err = nullptr;
-    if (!safe_area::resolve(g_sa.spec, fb_w, fb_h, vis, &r, &err)) {
+    if (!safe_area::resolve(g_sa.spec, fb_w, fb_h, vis, g_sa.dar, &r, &err)) {
         logf_("misterglue: safe area \"%s\" (%s) ignored: %s", g_sa.spec, g_sa.src, err);
         r = safe_area::Rect{0, 0, fb_w, fb_h};
     }
@@ -259,8 +260,8 @@ void safe_area_set_mode(bool full) {
     g_sa_ox = (float)r.x;
     g_sa_oy = (float)r.y;
     g_sa.full = full ? 1 : 0;
-    logf_("misterglue: safe area %dx%d+%d+%d (\"%s\" from %s; visible %dx%d+%d+%d%s)",
-          r.w, r.h, r.x, r.y, g_sa.spec, g_sa.src, vis.w, vis.h, vis.x, vis.y,
+    logf_("misterglue: safe area %dx%d+%d+%d (\"%s\" from %s; visible %dx%d+%d+%d at %d:%d%s)",
+          r.w, r.h, r.x, r.y, g_sa.spec, g_sa.src, vis.w, vis.h, vis.x, vis.y, g_sa.dar.num, g_sa.dar.den,
           g_bltctrl ? (full ? ", core 240 lines" : ", core short window") : "");
 }
 
@@ -273,6 +274,8 @@ void safe_area_poll(void) {
 }
 
 /* MISTER_GLUE_VISIBLE: the window the core scans out (default: the whole frame).
+   MISTER_GLUE_DAR: the display aspect the core shows that window at, in either
+   Vertical Lines mode (the RBF's video_freak ARX:ARY; default: fb_w:fb_h).
    Safe area: display.cfg's safe_area= (MISTER_GLUE_SAFE_AREA_FILE) wins over
    MISTER_GLUE_SAFE_AREA, so the user's file overrides the port's default. */
 void safe_area_init(int fb_w, int fb_h) {
@@ -287,6 +290,12 @@ void safe_area_init(int fb_w, int fb_h) {
             g_sa.window = v;
         else
             logf_("misterglue: MISTER_GLUE_VISIBLE=\"%s\" ignored (want WxH+X+Y inside %dx%d)", ve, fb_w, fb_h);
+    }
+    g_sa.dar = safe_area::Ratio{fb_w, fb_h};
+    const char *de = getenv("MISTER_GLUE_DAR");
+    if (de && *de && !safe_area::parse_ratio(de, &g_sa.dar)) {
+        g_sa.dar = safe_area::Ratio{fb_w, fb_h};
+        logf_("misterglue: MISTER_GLUE_DAR=\"%s\" ignored (want W:H)", de);
     }
 
     char cfgval[64];

@@ -50,18 +50,23 @@ A mapping you saved for this core earlier (`config/inputs/DonutDodo_input_*.map`
 
 ## Picture size
 
-On HDMI, first set **OSD → Vertical Lines** to **240**: the whole picture is then shown pixel for pixel. If the top or
-bottom is still cut off (a CRT, or a TV that overscans), or you want a different size, create
+**OSD → Vertical Lines** sets how many of the game's 240 lines the core sends to the display:
+
+- **240** (default): the whole picture, pixel for pixel. Best for HDMI. A CRT shows it like any 240-line console and
+  hides a few lines at the top and bottom.
+- **224**: the Genesis-style window, the lines a consumer CRT shows. The game is scaled into those 224 lines so nothing
+  is cut off; fine detail is a little uneven because 240 rows are drawn into 224 lines.
+
+The change takes effect immediately. If the edges are still cut off (a CRT, or a TV that overscans), create
 `games/DonutDodo/display.cfg` with one line, then restart the game:
 
-    safe_area = fit
+    safe_area = crt
 
 | Value | Picture |
 |---|---|
-| `fit` (default) | The whole game in the lines the core shows: pixel for pixel at Vertical Lines 240; scaled to 224 lines, with thin black bars at the sides, at 224 |
-| `crt` | 90% of `fit`, for a CRT that hides the edges of the picture (same as `90%`) |
+| `fit` (default) | The whole game in the lines the core shows, at the right shape: pixel for pixel at 240; the full 224-line window at 224 |
+| `crt` | 90% of `fit` with a black border, for a CRT that hides the edges of the picture (same as `90%`) |
 | `NN%` | `fit` scaled to NN% (1–100), e.g. `85%` for a CRT with a lot of overscan |
-| `stretch` | Full width, squashed vertically into the 224 lines (no side bars) |
 | `off` | Unscaled, pixel for pixel: at Vertical Lines 224 the top 7 and bottom 9 lines are not shown |
 | `WxH` or `WxH+X+Y` | An exact size (and position) in the game's 320×240 pixels, e.g. `288x216` |
 
@@ -72,10 +77,6 @@ picture is shown unscaled. The file is yours: installing a new release does not 
 
 ## Notes
 
-- **OSD → Vertical Lines** picks how many of the game's 240 lines the core sends to the display: **224** (default; rows
-  7–230, the lines a consumer CRT shows) or **240** (the whole picture; best for HDMI). With 224 the game's picture is
-  scaled down slightly to fit, so nothing at the top or bottom is cut off; see **Picture size** below. The change takes
-  effect immediately.
 - Saves and settings go to `games/DonutDodo/conf/`.
 - Logs: `/media/fat/logs/DonutDodo/` (`launch.log`, `donutdodo.log`, and `donutdodo.prev.log` from the previous run).
 - `platform/mem_wc/mem_wc-<kernel>.ko` gives the blitter a faster (write-combining) DDR mapping. It is loaded only if it matches the

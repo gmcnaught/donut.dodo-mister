@@ -633,10 +633,20 @@ The game does not keep its HUD inside a 224-line safe area.
 the single composite of the viewport render target — so the game still renders its 320×240 surface at native size and
 the cost is one smaller composite plus, when the engine did not clear the default framebuffer that frame, a black clear
 for the border (the backend emits it: `mf_pc_is_cover` no longer proves a shrunk composite covers the screen, which is
-the correct outcome). Default `fit` = 299×224+10+7 inside the core's 320×224+0+7 window; `crt` = 269×202+25+18.
+the correct outcome).
 
-Config: `MISTER_GLUE_VISIBLE` (the core's window, must track the RBF), `MISTER_GLUE_SAFE_AREA` (port default),
-`games/DonutDodo/display.cfg` `safe_area=` (user, wins). Host test: `make test`.
+**Aspect.** `fit` works in display units. The core shows the scanned window at a fixed 4:3 (`video_freak` ARX/ARY 4/3,
+`Maldita.sv`), so a scanned pixel's aspect is `4/3 × vis.h / vis.w` (224/240 in the 224 window, 1 in the 240 one), and
+the 4:3 game fills the 224 window whole. Default `fit` = 320×224+0+7 at 224 and 1:1 at 240; `crt` = 288×202+16+18 at
+224 and 288×216+16+12 at 240. (The first draft fitted in pixel units, 299×224+10+7: 6.6% too narrow on screen; `stretch`
+is gone, `fit` is now that fill.)
+
+Config: `MISTER_GLUE_VISIBLE` (the core's window, must track the RBF), `MISTER_GLUE_DAR` (the RBF's ARX:ARY),
+`MISTER_GLUE_SAFE_AREA` (port default), `games/DonutDodo/display.cfg` `safe_area=` (user, wins). Host test: `make test`.
+
+**Known quality limit.** Filling the 224 window is the same transform maldita.castilla-mister `aa90ce2` did in the
+reader (row floor(n × 240 / 224)), reverted in `3d853ad` after a CRT check: text and thin rows looked uneven. That is
+why the core now defaults to 240 lines (below); the 224 fill is for users who pick the V28 window.
 
 **Cost.** 240→224 is a non-integer minification; the composite samples the app surface point-sampled, so about one row
 in 15 (and one column in 15) is dropped, which can shimmer on scrolling pixel art. `off` restores 1:1.
@@ -653,7 +663,9 @@ it at the frame wrap; the reader latches it where it restarts a frame (inside vb
 The fabric mirrors the raw level into `C_STATUS` low32 bit2 each frame; the glue maps the control page read-only
 (`MISTER_GLUE_OSD_LINES=1`) and re-resolves the safe area between frames when it changes, so the OSD choice and the
 safe area cannot disagree. Older cores leave the bit 0, which is the 224 window: the right answer for them. Default
-stays 224 (unchanged for CRT users and for the Cash Cow DX build of the same RTL).
+is **240** for the Donut Dodo build (the OSD lists 240 first; `osd_v_full = ~status[18]`) and stays 224 for the Cash Cow
+DX build of the same RTL (`CASHCOW_CORE`, whose 224 window was checked in its PLAN §6.21). A saved core config that
+has bit 18 set (the long-removed 224p crop option) selects 224.
 
 Sims (Icarus): new `tb_video_timing_vfull` (both modes, mid-frame/vblank switch requests, vsync placement, v_adj
 −3..+3; a mid-frame-switch mutation fails it), new `tb_reader_ddr_v240` (the full reader bench with fetches from row
