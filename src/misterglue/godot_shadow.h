@@ -64,6 +64,8 @@ void shutdown();
 void on_shader_source(uint32_t shader, const char *src);
 void on_attach_shader(uint32_t program, uint32_t shader);
 void on_use_program(uint32_t program);
+void on_delete_program(uint32_t program);
+void on_delete_shader(uint32_t shader);
 void on_bind_attrib_location(uint32_t program, uint32_t index, const char *name);
 void on_get_uniform_location(uint32_t program, const char *name, int loc);
 void on_uniform_matrix4fv(int loc, int count, const float *v);
@@ -94,6 +96,7 @@ void on_bind_framebuffer(uint32_t target, uint32_t fbo);
 void on_framebuffer_texture2d(uint32_t target, uint32_t attach, uint32_t textarget,
                               uint32_t tex, int level);
 void on_gen_framebuffers(int n, const uint32_t *ids);
+void on_delete_framebuffers(int n, const uint32_t *ids);
 
 /* The FBO/texture pair Godot uses as its viewport render target, once a draw has
    revealed it by sampling that texture into the default framebuffer. Returns
@@ -132,6 +135,10 @@ struct Stats {
     uint32_t copytex_calls;
     uint32_t tex_never_uploaded;
 };
+/* Live table slots, for the stats line: a count that only climbs means a delete
+   path is not releasing its slot. */
+struct TableUse { int textures, buffers, programs, shaders, fbos; };
+TableUse table_use();
 const Stats &stats();
 void stats_reset();
 

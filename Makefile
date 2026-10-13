@@ -59,7 +59,18 @@ $(OUT)/libmisterglue.so: $(OBJS)
 vendor-only: $(patsubst %.cpp,$(OUT)/%.o,$(VENDOR_CXX)) $(patsubst %.c,$(OUT)/%.o,$(VENDOR_C))
 	@echo "vendored fabric stack compiles"
 
+# Host unit tests (native compiler, no cross toolchain needed).
+HOSTCXX ?= g++
+test: $(OUT)/host/test_godot_shadow
+	$(OUT)/host/test_godot_shadow
+
+$(OUT)/host/test_godot_shadow: $(SRCDIR)/misterglue/test_godot_shadow.cpp \
+                               $(SRCDIR)/misterglue/godot_shadow.cpp $(SRCDIR)/misterglue/godot_shadow.h
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=gnu++14 -Wall -Wextra -O2 -I$(VENDOR)/mister -I$(SRCDIR)/misterglue \
+		-o $@ $(SRCDIR)/misterglue/test_godot_shadow.cpp $(SRCDIR)/misterglue/godot_shadow.cpp -lm
+
 clean:
 	rm -rf $(OUT)
 
-.PHONY: all clean vendor-only
+.PHONY: all clean vendor-only test

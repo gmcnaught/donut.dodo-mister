@@ -92,9 +92,17 @@ struct Program {
     float src_rect[4] = {};
     int  loc_white = -1;       /* Player.shader's `uniform bool white` (m_white) */
     int  white = 0;
+    bool delete_pending = false;  /* glDeleteProgram while current: GL keeps it in
+                                     use until another program replaces it */
 };
 
-/* ---- fixed-capacity tables (Godot's working set here is tiny) ------------- */
+/* ---- fixed-capacity tables (Godot's working set here is tiny) -------------
+   The LIVE working set is tiny; the number of ids over a session is not. Godot
+   frees a level's textures, buffers and shader programs when the level unloads
+   and creates new ones for the next, and null GL (patch 0007) never reuses a
+   name. So every delete must give its slot back, or the table fills after
+   about two playthroughs and every object created after that is untracked: its
+   draws fail decode and, with null GL, are not drawn at all. */
 template <typename T, int N>
 struct Table {
     T slots[N];
@@ -111,6 +119,16 @@ struct Table {
         *t = T();
         t->id = id;
         return t;
+    }
+    /* Release id's slot: the last slot moves into it, so pointers from find()
+       are invalid afterwards. The caller frees whatever the slot owns first. */
+    void remove(uint32_t id) {
+        T *t = find(id);
+        if (!t) return;
+        T *last = &slots[used - 1];
+        if (t != last) *t = *last;
+        *last = T();
+        used--;
     }
 };
 
@@ -412,7 +430,24 @@ void on_attach_shader(uint32_t program, uint32_t shader) {
     d.white_flash     |= s.white_flash;
 }
 
-void on_use_program(uint32_t program) { g.cur_program = program; }
+void on_use_program(uint32_t program) {
+    if (g.cur_program != program) {
+        Program *prev = cur_prog();
+        if (prev && prev->delete_pending) g.programs.remove(prev->id);
+    }
+    g.cur_program = program;
+}
+
+void on_delete_program(uint32_t program) {
+    Program *p = program ? g.programs.find(program) : nullptr;
+    if (!p) return;
+    if (program == g.cur_program) p->delete_pending = true;
+    else g.programs.remove(program);
+}
+
+/* The program keeps what on_attach_shader folded in, so the shader's own slot
+   can go now even if a program still has it attached. */
+void on_delete_shader(uint32_t shader) { if (shader) g.shaders.remove(shader); }
 
 void on_bind_attrib_location(uint32_t, uint32_t, const char *) { /* Godot uses fixed slots */ }
 
@@ -567,10 +602,8 @@ void on_delete_textures(int n, const uint32_t *ids) {
         free(t->rgba);
         t->rgba = nullptr;
         free(t->white_rgba);
-        t->white_rgba = nullptr;
-        t->white_built = false;
-        t->valid = false;
-        t->generation++;
+        if (ids[i] == g.appsurf_tex) { g.appsurf_tex = 0; g.appsurf_fbo = 0; }  /* re-detect */
+        g.textures.remove(ids[i]);
     }
 }
 
@@ -605,8 +638,7 @@ void on_delete_buffers(int n, const uint32_t *ids) {
         Buffer *b = g.buffers.find(ids[i]);
         if (!b) continue;
         free(b->data);
-        b->data = nullptr;
-        b->size = 0;
+        g.buffers.remove(ids[i]);
     }
 }
 
@@ -654,6 +686,15 @@ void on_gen_framebuffers(int n, const uint32_t *ids) {
     for (int i = 0; i < n; i++) g.fbos.get_or_add(ids[i]);
 }
 
+void on_delete_framebuffers(int n, const uint32_t *ids) {
+    for (int i = 0; i < n; i++) {
+        if (!ids[i]) continue;
+        if (ids[i] == g.appsurf_fbo) { g.appsurf_fbo = 0; g.appsurf_tex = 0; }  /* re-detect */
+        if (ids[i] == g.bound_fbo) g.bound_fbo = 0;   /* GL reverts to the default */
+        g.fbos.remove(ids[i]);
+    }
+}
+
 bool app_surface(uint32_t *fbo, uint32_t *tex) {
     if (!g.appsurf_fbo || !g.appsurf_tex) return false;
     if (fbo) *fbo = g.appsurf_fbo;
@@ -683,6 +724,9 @@ uint32_t bound_fbo() { return g.bound_fbo; }
 
 const Stats &stats() { return g.st; }
 void stats_reset() { memset(&g.st, 0, sizeof(g.st)); }
+TableUse table_use() {
+    return TableUse{ g.textures.used, g.buffers.used, g.programs.used, g.shaders.used, g.fbos.used };
+}
 
 /* ---- draw decode --------------------------------------------------------- */
 namespace {
