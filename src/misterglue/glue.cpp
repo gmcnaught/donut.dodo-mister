@@ -13,6 +13,7 @@
 #include "draw_rewrite.h"
 #include "safe_area.h"
 
+#include <math.h>
 #include <stdarg.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -95,7 +96,11 @@ constexpr int kMinFillPx = 64 * 64;   /* solid rects below this stay triangles *
    the scene straight into the screen: app-surface draws and clears target the
    default framebuffer, and the copy is dropped. Until that copy arrives, the
    screen's own draws and clears are dropped too -- the opaque copy would have
-   covered them. Any other use of the surface ends it from the next frame. */
+   covered them. Any other use of the surface ends it from the next frame.
+   A safe area that only moves the picture by whole pixels (Picture Up,
+   v_shift) keeps it: the scene is drawn at its place, its clear fills only the
+   picture, and where the copy was the border is filled black, as the copy
+   would have left it. A scaled safe area keeps the copy. */
 bool     g_present_1to1 = false;
 bool     g_direct       = false;   /* this frame */
 bool     g_presented    = false;   /* this frame's surface copy has been seen */
@@ -368,6 +373,38 @@ void safe_area_apply(gs::DecodedDraw &d) {
     }
 }
 
+/* The safe area moves the picture by whole pixels at most, so direct present
+   can draw the scene where the copy would have put it. */
+bool safe_area_is_move() {
+    return !g_safe || (g_sa_sx == 1.0f && g_sa_sy == 1.0f &&
+                       g_sa_ox == floorf(g_sa_ox) && g_sa_oy == floorf(g_sa_oy));
+}
+
+/* Direct present with a safe area: fill the picture rect (the scene's clear)
+   or the black border around it (where the copy was). */
+void direct_fill_picture(uint8_t r, uint8_t g_, uint8_t b) {
+    RSurface def{};
+    def.w = host.scanout_w;
+    def.h = host.scanout_h;
+    RasterBackend_MFGPU_FillRect(&def, (int)g_sa_ox, (int)g_sa_oy, host.scanout_w, host.scanout_h,
+                                 r, g_, b);
+}
+
+void direct_fill_border() {
+    RSurface def{};
+    def.w = host.scanout_w;
+    def.h = host.scanout_h;
+    const int W = host.scanout_w, H = host.scanout_h;
+    const int x0 = (int)g_sa_ox, y0 = (int)g_sa_oy, x1 = x0 + W, y1 = y0 + H;
+    const int cy0 = y0 < 0 ? 0 : y0, cy1 = y1 > H ? H : y1;
+    if (cy0 > 0) RasterBackend_MFGPU_FillRect(&def, 0, 0, W, cy0, 0, 0, 0);
+    if (cy1 < H) RasterBackend_MFGPU_FillRect(&def, 0, cy1, W, H - cy1, 0, 0, 0);
+    if (cy1 > cy0) {
+        if (x0 > 0) RasterBackend_MFGPU_FillRect(&def, 0, cy0, x0, cy1 - cy0, 0, 0, 0);
+        if (x1 < W) RasterBackend_MFGPU_FillRect(&def, x1, cy0, W - x1, cy1 - cy0, 0, 0, 0);
+    }
+}
+
 void dump_surface(const RSurface *s, const char *path) {
     FILE *f = fopen(path, "wb");
     if (!f) return;
@@ -534,6 +571,10 @@ void w_Clear(unsigned mask) {
             if (g_presented) {            /* for a copy that already happened */
                 g_pd_mismatch++;
                 g_frame_1to1 = false;
+            } else if (g_safe) {
+                uint8_t r, gg, b, a;
+                gs::get_clear_color(&r, &gg, &b, &a);
+                direct_fill_picture(r, gg, b);
             } else {
                 is_def = true;            /* the scene's clear, onto the screen */
             }
@@ -592,6 +633,7 @@ void dispatch_decoded(const gs::DecodedDraw &decoded) {
             /* The scene is on the screen already; the surface holds an old frame,
                so drawing from it would only be worse than leaving it out. */
             if (g_presented || !g_frame_1to1) g_pd_mismatch++;
+            else if (g_safe) direct_fill_border();
             g_presented = true;
             return;
         }
@@ -612,7 +654,7 @@ void dispatch_decoded(const gs::DecodedDraw &decoded) {
        full-screen solid quad no longer covers the target and is not turned into
        a FILL over the black border. */
     if (g_safe && d.to_default_fb) {
-        if (!g_def_cleared) {
+        if (!g_def_cleared && !g_direct) {   /* direct: the border is filled at the copy */
             RSurface def{};
             def.w = host.scanout_w;
             def.h = host.scanout_h;
@@ -873,7 +915,7 @@ int glue_present() {
             g_present_1to1 = g_frame_presents == 1 && g_frame_1to1;
         else if (!g_frame_1to1)
             g_present_1to1 = false;
-        g_direct = (g_rewrite & RW_DIRECT) && g_present_1to1 && !g_safe && !g_sw_surfaces;
+        g_direct = (g_rewrite & RW_DIRECT) && g_present_1to1 && safe_area_is_move() && !g_sw_surfaces;
         if (g_direct) g_pd_frames++;
         g_presented = false;
         g_frame_presents = 0;
