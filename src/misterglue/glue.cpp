@@ -36,6 +36,8 @@ struct RealGL {
     void (*ShaderSource)(unsigned, int, const char *const *, const int *);
     void (*AttachShader)(unsigned, unsigned);
     void (*UseProgram)(unsigned);
+    void (*DeleteProgram)(unsigned);
+    void (*DeleteShader)(unsigned);
     int  (*GetUniformLocation)(unsigned, const char *);
     void (*UniformMatrix4fv)(int, int, unsigned char, const float *);
     void (*Uniform4fv)(int, int, const float *);
@@ -65,6 +67,7 @@ struct RealGL {
     void (*BindFramebuffer)(unsigned, unsigned);
     void (*FramebufferTexture2D)(unsigned, unsigned, unsigned, unsigned, int);
     void (*GenFramebuffers)(int, unsigned *);
+    void (*DeleteFramebuffers)(int, const unsigned *);
     void (*Viewport)(int, int, int, int);
     void (*Scissor)(int, int, int, int);
     void (*ClearColor)(float, float, float, float);
@@ -219,6 +222,8 @@ void w_ShaderSource(unsigned s, int count, const char *const *str, const int *le
 
 void w_AttachShader(unsigned p, unsigned s) { gs::on_attach_shader(p, s); gl.AttachShader(p, s); }
 void w_UseProgram(unsigned p) { gs::on_use_program(p); gl.UseProgram(p); }
+void w_DeleteProgram(unsigned p) { gs::on_delete_program(p); gl.DeleteProgram(p); }
+void w_DeleteShader(unsigned s) { gs::on_delete_shader(s); gl.DeleteShader(s); }
 
 int w_GetUniformLocation(unsigned p, const char *name) {
     int loc = gl.GetUniformLocation(p, name);
@@ -310,6 +315,11 @@ void w_BindFramebuffer(unsigned t, unsigned f) { gs::on_bind_framebuffer(t, f); 
 void w_GenFramebuffers(int n, unsigned *ids) {
     gl.GenFramebuffers(n, ids);
     gs::on_gen_framebuffers(n, ids);
+}
+
+void w_DeleteFramebuffers(int n, const unsigned *ids) {
+    gs::on_delete_framebuffers(n, ids);
+    gl.DeleteFramebuffers(n, ids);
 }
 
 void w_FramebufferTexture2D(unsigned t, unsigned a, unsigned tt, unsigned tex, int l) {
@@ -417,6 +427,8 @@ const Entry kEntries[] = {
     { "glShaderSource", (void *)w_ShaderSource },
     { "glAttachShader", (void *)w_AttachShader },
     { "glUseProgram", (void *)w_UseProgram },
+    { "glDeleteProgram", (void *)w_DeleteProgram },
+    { "glDeleteShader", (void *)w_DeleteShader },
     { "glGetUniformLocation", (void *)w_GetUniformLocation },
     { "glUniformMatrix4fv", (void *)w_UniformMatrix4fv },
     { "glUniform4fv", (void *)w_Uniform4fv },
@@ -446,6 +458,7 @@ const Entry kEntries[] = {
     { "glBindFramebuffer", (void *)w_BindFramebuffer },
     { "glFramebufferTexture2D", (void *)w_FramebufferTexture2D },
     { "glGenFramebuffers", (void *)w_GenFramebuffers },
+    { "glDeleteFramebuffers", (void *)w_DeleteFramebuffers },
     { "glViewport", (void *)w_Viewport },
     { "glScissor", (void *)w_Scissor },
     { "glClearColor", (void *)w_ClearColor },
@@ -467,6 +480,8 @@ int glue_init(const MisterGlueHost *h) {
     REAL(ShaderSource, "glShaderSource");
     REAL(AttachShader, "glAttachShader");
     REAL(UseProgram, "glUseProgram");
+    REAL(DeleteProgram, "glDeleteProgram");
+    REAL(DeleteShader, "glDeleteShader");
     REAL(GetUniformLocation, "glGetUniformLocation");
     REAL(UniformMatrix4fv, "glUniformMatrix4fv");
     REAL(Uniform4fv, "glUniform4fv");
@@ -496,6 +511,7 @@ int glue_init(const MisterGlueHost *h) {
     REAL(BindFramebuffer, "glBindFramebuffer");
     REAL(FramebufferTexture2D, "glFramebufferTexture2D");
     REAL(GenFramebuffers, "glGenFramebuffers");
+    REAL(DeleteFramebuffers, "glDeleteFramebuffers");
     REAL(Viewport, "glViewport");
     REAL(Scissor, "glScissor");
     REAL(ClearColor, "glClearColor");
@@ -575,17 +591,20 @@ int glue_present() {
     }
     if (g_log_stats && (g_frames % 120) == 0) {
         const gs::Stats &s = gs::stats();
+        const gs::TableUse u = gs::table_use();
         logf_("misterglue: %u frames | draws %u decoded %u fallback %u "
               "(shader %u prog %u mode %u attrib %u tex %u blend %u) "
               "tex[unbound %u missing %u invalid %u never-uploaded %u last id=%u %ux%u] "
-              "rej[up %u sub %u fmt=0x%x type=0x%x copytex %u] surfdraws %u",
+              "rej[up %u sub %u fmt=0x%x type=0x%x copytex %u] surfdraws %u "
+              "slots[tex %d buf %d prog %d shader %d fbo %d]",
               g_frames, s.draws_seen, s.draws_decoded, s.draws_fallback,
               s.fallback_custom_shader, s.fallback_program, s.fallback_mode,
               s.fallback_attrib, s.fallback_texture, s.fallback_blend,
               s.tex_unbound, s.tex_missing, s.tex_invalid, s.tex_never_uploaded,
               s.last_bad_tex, s.last_bad_w, s.last_bad_h,
               s.uploads_rejected, s.subuploads_rejected, s.last_rej_fmt,
-              s.last_rej_type, s.copytex_calls, s.src_surface_draws);
+              s.last_rej_type, s.copytex_calls, s.src_surface_draws,
+              u.textures, u.buffers, u.programs, u.shaders, u.fbos);
         gs::stats_reset();
     }
     return g_fabric ? 1 : 0;
