@@ -171,11 +171,69 @@ void test_solid_cover() {
     EXPECT(!dr::solid_cover(d, W, H, c), "additive blend is not a fill");
 }
 
+/* Godot's viewport copy as the device logs it: a 320x240 quad, uv 0..1 with
+   v=1 at the top (GL rows), blend none, white. */
+void present_quad(BVtx *v) {
+    const float xs[4] = { 0, W, W, 0 }, ys[4] = { 0, 0, H, H };
+    const float us[4] = { 0, 1, 1, 0 }, vs[4] = { 1, 1, 0, 0 };
+    const int order[6] = { 0, 1, 2, 0, 2, 3 };
+    for (int i = 0; i < 6; i++) {
+        const int k = order[i];
+        v[i] = BVtx{};
+        v[i].x = xs[k]; v[i].y = ys[k]; v[i].u = us[k]; v[i].v = vs[k];
+        v[i].r = v[i].g = v[i].b = v[i].a = 1.0f;
+    }
+}
+
+void test_identity_present() {
+    BVtx v[6], keep[6];
+    present_quad(v);
+    memcpy(keep, v, sizeof v);
+    gs::DecodedDraw d;
+    d.verts = v; d.tris = 2; d.blend = RB_NONE; d.src_is_surface = true; d.to_default_fb = true;
+    d.tex.w = W; d.tex.h = H;
+    EXPECT(dr::identity_present(d, W, H), "the 1:1 viewport copy must be recognised");
+
+    for (int i = 0; i < 6; i++) v[i].v = 1.0f - v[i].v;
+    EXPECT(!dr::identity_present(d, W, H), "top-row-first UVs come out upside down after the backend's flip");
+    memcpy(v, keep, sizeof v);
+    for (int i = 0; i < 6; i++) v[i].x += 1.0f;
+    EXPECT(!dr::identity_present(d, W, H), "a shifted copy is not 1:1");
+    memcpy(v, keep, sizeof v);
+    for (int i = 0; i < 6; i++) { v[i].x *= 0.9f; v[i].y *= 0.9f; }
+    EXPECT(!dr::identity_present(d, W, H), "a scaled copy (safe area) is not 1:1");
+    memcpy(v, keep, sizeof v);
+    for (int i = 0; i < 6; i++) v[i].u *= 0.5f;
+    EXPECT(!dr::identity_present(d, W, H), "sampling part of the surface is not 1:1");
+    memcpy(v, keep, sizeof v);
+    for (int i = 0; i < 6; i++) v[i].a = 0.5f;
+    EXPECT(!dr::identity_present(d, W, H), "a translucent copy blends with what is under it");
+    memcpy(v, keep, sizeof v);
+    v[2].g = 0.5f;
+    EXPECT(!dr::identity_present(d, W, H), "a tinted copy changes the pixels");
+    memcpy(v, keep, sizeof v);
+    v[3] = v[0]; v[4] = v[1]; v[5] = v[2];
+    EXPECT(!dr::identity_present(d, W, H), "half the screen is not the whole copy");
+    memcpy(v, keep, sizeof v);
+    d.blend = RB_ALPHA;
+    EXPECT(!dr::identity_present(d, W, H), "only a plain copy qualifies");
+    d.blend = RB_NONE;
+    d.tex.w = 512;
+    EXPECT(!dr::identity_present(d, W, H), "a surface of another size is not 1:1");
+    d.tex.w = W;
+    d.to_default_fb = false;
+    EXPECT(!dr::identity_present(d, W, H), "a copy into another render target is not the present");
+    d.to_default_fb = true;
+    d.src_is_surface = false;
+    EXPECT(!dr::identity_present(d, W, H), "an ordinary texture is not the surface");
+}
+
 }  // namespace
 
 int main() {
     test_unrotate();
     test_solid_cover();
+    test_identity_present();
     if (g_fail) { printf("test_draw_rewrite: %d failure(s)\n", g_fail); return 1; }
     printf("test_draw_rewrite: ok\n");
     return 0;

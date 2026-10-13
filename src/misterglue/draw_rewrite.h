@@ -15,6 +15,11 @@
   laid out in screen space, then draw the same triangles reading it row by row.
   The scratch keys alternate by frame parity, so the texture a still-executing
   frame reads is never the one being replaced.
+
+  identity_present: Godot draws the scene into its viewport render target (the
+  app surface) and then copies that to the screen, a 320x240 TRILIST at ~6
+  fabric cycles per pixel (~4.7 ms a frame). When the copy is 1:1, the glue can
+  draw the scene straight into the screen and drop the copy (glue.cpp).
 */
 #ifndef DRAW_REWRITE_H
 #define DRAW_REWRITE_H
@@ -35,6 +40,11 @@ bool solid_cover(const gs::DecodedDraw &d, int w, int h, uint8_t rgba[4]);
    Returns true when d now points at the scratch texture; invalidate(key) is
    called first so the backend restages it. */
 bool unrotate(gs::DecodedDraw &d, int w, int h, void (*invalidate)(uint32_t key));
+
+/* True when d copies the whole app surface onto a w x h default framebuffer
+   pixel for pixel: an opaque, untinted, axis-aligned w x h quad whose texel
+   (as the backend samples it) is its own pixel. */
+bool identity_present(const gs::DecodedDraw &d, int w, int h);
 
 /* Once per presented frame: flips the scratch key parity. */
 void frame_end();
