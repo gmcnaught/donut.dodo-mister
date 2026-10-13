@@ -36,25 +36,15 @@ bool uniform_texture(const RTexture &t, uint8_t out[4]) {
     return true;
 }
 
-} /* namespace */
-
-bool solid_cover(const gs::DecodedDraw &d, int w, int h, uint8_t rgba[4]) {
-    if (d.tris != 2 || d.src_is_surface || !d.verts) return false;
-    if (d.blend != RB_NONE && d.blend != RB_ALPHA) return false;
-    uint8_t tx[4];
-    if (!uniform_texture(d.tex, tx)) return false;
-
-    const BVtx *v = d.verts;
+/* The two triangles are one axis-aligned rectangle: every vertex on one of the
+   bounding box's corners (0..3 going round), each triangle using three distinct
+   corners, and the two leaving out opposite corners, i.e. split on a diagonal. */
+bool axis_rect(const BVtx *v, float *px0, float *py0, float *px1, float *py1) {
     float x0 = v[0].x, x1 = v[0].x, y0 = v[0].y, y1 = v[0].y;
-    for (int i = 0; i < 6; i++) {
-        if (!near(v[i].r, v[0].r) || !near(v[i].g, v[0].g) ||
-            !near(v[i].b, v[0].b) || !near(v[i].a, v[0].a)) return false;
+    for (int i = 1; i < 6; i++) {
         x0 = fminf(x0, v[i].x); x1 = fmaxf(x1, v[i].x);
         y0 = fminf(y0, v[i].y); y1 = fmaxf(y1, v[i].y);
     }
-    /* An axis-aligned rectangle: every vertex on one of the bounding box's
-       corners (0..3 going round), each triangle using three distinct corners,
-       and the two leaving out opposite corners, i.e. split on a diagonal. */
     if (x1 - x0 <= 0.0f || y1 - y0 <= 0.0f) return false;
     int omitted[2];
     for (int t = 0; t < 2; t++) {
@@ -69,7 +59,57 @@ bool solid_cover(const gs::DecodedDraw &d, int w, int h, uint8_t rgba[4]) {
         omitted[t] = __builtin_ctz(~mask & 0xF);
     }
     if (omitted[1] != (omitted[0] + 2) % 4) return false;
-    if (x0 > 0.0f || y0 > 0.0f || x1 < (float)w || y1 < (float)h) return false;
+    *px0 = x0; *py0 = y0; *px1 = x1; *py1 = y1;
+    return true;
+}
+
+} /* namespace */
+
+bool identity_present(const gs::DecodedDraw &d, int w, int h) {
+    if (!d.src_is_surface || !d.to_default_fb || d.tris != 2 || !d.verts) return false;
+    if (d.blend != RB_NONE || d.tex.w != w || d.tex.h != h) return false;
+    const BVtx *v = d.verts;
+    float x0, y0, x1, y1;
+    if (!axis_rect(v, &x0, &y0, &x1, &y1)) return false;
+    if (!near(x0, 0.0f) || !near(y0, 0.0f) || !near(x1, (float)w) || !near(y1, (float)h)) return false;
+    /* The backend samples the surface at (u*w, (vmin+vmax-v)*h): GL's
+       bottom-origin texture rows, flipped about the quad's own V extent. */
+    float vmin = v[0].v, vmax = v[0].v;
+    for (int i = 1; i < 6; i++) { vmin = fminf(vmin, v[i].v); vmax = fmaxf(vmax, v[i].v); }
+    for (int i = 0; i < 6; i++) {
+        if (v[i].r < 0.999f || v[i].g < 0.999f || v[i].b < 0.999f || v[i].a < 0.999f) return false;
+        if (fabsf(v[i].u * w - v[i].x) > 0.01f || fabsf((vmin + vmax - v[i].v) * h - v[i].y) > 0.01f)
+            return false;
+    }
+    return true;
+}
+
+bool solid_rect(const gs::DecodedDraw &d, int w, int h, uint8_t rgba[4], int rect[4]) {
+    if (d.tris != 2 || d.src_is_surface || !d.verts) return false;
+    if (d.blend != RB_NONE && d.blend != RB_ALPHA) return false;
+    uint8_t tx[4];
+    if (!uniform_texture(d.tex, tx)) return false;
+
+    const BVtx *v = d.verts;
+    for (int i = 1; i < 6; i++)
+        if (!near(v[i].r, v[0].r) || !near(v[i].g, v[0].g) ||
+            !near(v[i].b, v[0].b) || !near(v[i].a, v[0].a)) return false;
+    float x0, y0, x1, y1;
+    if (!axis_rect(v, &x0, &y0, &x1, &y1)) return false;
+    /* The pixels a FILL writes: an edge inside the target must sit on a pixel
+       boundary, so no pixel centre is in doubt; one outside is clipped. */
+    auto edge = [](float e, int lim, int *out) {
+        if (e <= 0.0f) { *out = 0; return true; }
+        if (e >= (float)lim) { *out = lim; return true; }
+        const float r = roundf(e);
+        if (fabsf(e - r) > 1e-3f) return false;
+        *out = (int)r;
+        return true;
+    };
+    int ix0, iy0, ix1, iy1;
+    if (!edge(x0, w, &ix0) || !edge(x1, w, &ix1) || !edge(y0, h, &iy0) || !edge(y1, h, &iy1))
+        return false;
+    if (ix1 <= ix0 || iy1 <= iy0) return false;
 
     /* frag = vertex colour * texel; it must be opaque for a FILL to equal it. */
     const float a = v[0].a * tx[3] / 255.0f;
@@ -80,7 +120,13 @@ bool solid_cover(const gs::DecodedDraw &d, int w, int h, uint8_t rgba[4]) {
         rgba[k] = (uint8_t)(f < 0.0f ? 0.0f : f > 255.0f ? 255.0f : f + 0.5f);
     }
     rgba[3] = 255;
+    rect[0] = ix0; rect[1] = iy0; rect[2] = ix1 - ix0; rect[3] = iy1 - iy0;
     return true;
+}
+
+bool solid_cover(const gs::DecodedDraw &d, int w, int h, uint8_t rgba[4]) {
+    int r[4];
+    return solid_rect(d, w, h, rgba, r) && r[0] == 0 && r[1] == 0 && r[2] == w && r[3] == h;
 }
 
 bool unrotate(gs::DecodedDraw &d, int w, int h, void (*invalidate)(uint32_t key)) {

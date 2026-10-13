@@ -13,6 +13,7 @@
 #include "draw_rewrite.h"
 #include "safe_area.h"
 
+#include <math.h>
 #include <stdarg.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -83,11 +84,29 @@ MisterGlueHost host;
 bool g_inited      = false;
 bool g_fabric      = false;   /* MISTER_GLUE_FABRIC=1: let the fabric own drawing */
 bool g_log_stats   = false;
-/* draw_rewrite.h, as a bitmask for A/B runs: MISTER_GLUE_REWRITE=1 fill only,
-   2 unrotate only, 0 neither (default 3). */
-enum { RW_FILL = 1, RW_UNROTATE = 2 };
-int  g_rewrite     = RW_FILL | RW_UNROTATE;
+/* draw_rewrite.h, as a bitmask for A/B runs: MISTER_GLUE_REWRITE 1 fill,
+   2 unrotate, 4 direct present (default 7, all; 0 none). */
+enum { RW_FILL = 1, RW_UNROTATE = 2, RW_DIRECT = 4 };
+int  g_rewrite     = RW_FILL | RW_UNROTATE | RW_DIRECT;
 unsigned g_rw_fills = 0, g_rw_unrotated = 0;   /* per stats window */
+constexpr int kMinFillPx = 64 * 64;   /* solid rects below this stay triangles */
+
+/* Direct present (draw_rewrite.h identity_present). While the last frame that
+   presented copied the app surface 1:1 (g_present_1to1), the next frame draws
+   the scene straight into the screen: app-surface draws and clears target the
+   default framebuffer, and the copy is dropped. Until that copy arrives, the
+   screen's own draws and clears are dropped too -- the opaque copy would have
+   covered them. Any other use of the surface ends it from the next frame.
+   A safe area that only moves the picture by whole pixels (Picture Up,
+   v_shift) keeps it: the scene is drawn at its place, its clear fills only the
+   picture, and where the copy was the border is filled black, as the copy
+   would have left it. A scaled safe area keeps the copy. */
+bool     g_present_1to1 = false;
+bool     g_direct       = false;   /* this frame */
+bool     g_presented    = false;   /* this frame's surface copy has been seen */
+unsigned g_frame_presents = 0;     /* surface copies this frame */
+bool     g_frame_1to1   = true;    /* ...all of them 1:1, and nothing else touched the surface */
+unsigned g_pd_frames = 0, g_pd_dropped = 0, g_pd_mismatch = 0;   /* per stats window */
 unsigned g_frames  = 0;
 
 const RasterBackend *g_backend = nullptr;
@@ -354,6 +373,38 @@ void safe_area_apply(gs::DecodedDraw &d) {
     }
 }
 
+/* The safe area moves the picture by whole pixels at most, so direct present
+   can draw the scene where the copy would have put it. */
+bool safe_area_is_move() {
+    return !g_safe || (g_sa_sx == 1.0f && g_sa_sy == 1.0f &&
+                       g_sa_ox == floorf(g_sa_ox) && g_sa_oy == floorf(g_sa_oy));
+}
+
+/* Direct present with a safe area: fill the picture rect (the scene's clear)
+   or the black border around it (where the copy was). */
+void direct_fill_picture(uint8_t r, uint8_t g_, uint8_t b) {
+    RSurface def{};
+    def.w = host.scanout_w;
+    def.h = host.scanout_h;
+    RasterBackend_MFGPU_FillRect(&def, (int)g_sa_ox, (int)g_sa_oy, host.scanout_w, host.scanout_h,
+                                 r, g_, b);
+}
+
+void direct_fill_border() {
+    RSurface def{};
+    def.w = host.scanout_w;
+    def.h = host.scanout_h;
+    const int W = host.scanout_w, H = host.scanout_h;
+    const int x0 = (int)g_sa_ox, y0 = (int)g_sa_oy, x1 = x0 + W, y1 = y0 + H;
+    const int cy0 = y0 < 0 ? 0 : y0, cy1 = y1 > H ? H : y1;
+    if (cy0 > 0) RasterBackend_MFGPU_FillRect(&def, 0, 0, W, cy0, 0, 0, 0);
+    if (cy1 < H) RasterBackend_MFGPU_FillRect(&def, 0, cy1, W, H - cy1, 0, 0, 0);
+    if (cy1 > cy0) {
+        if (x0 > 0) RasterBackend_MFGPU_FillRect(&def, 0, cy0, x0, cy1 - cy0, 0, 0, 0);
+        if (x1 < W) RasterBackend_MFGPU_FillRect(&def, x1, cy0, W - x1, cy1 - cy0, 0, 0, 0);
+    }
+}
+
 void dump_surface(const RSurface *s, const char *path) {
     FILE *f = fopen(path, "wb");
     if (!f) return;
@@ -512,6 +563,22 @@ void w_Clear(unsigned mask) {
         uint32_t as_fbo = 0;
         bool is_def = gs::target_is_default();
         bool is_app = gs::app_surface(&as_fbo, nullptr) && !is_def && gs::bound_fbo() == as_fbo;
+        if (g_direct && is_def && !g_presented) {
+            g_pd_dropped++;               /* under the copy we are not drawing */
+            is_def = false;
+        } else if (g_direct && is_app) {
+            is_app = false;
+            if (g_presented) {            /* for a copy that already happened */
+                g_pd_mismatch++;
+                g_frame_1to1 = false;
+            } else if (g_safe) {
+                uint8_t r, gg, b, a;
+                gs::get_clear_color(&r, &gg, &b, &a);
+                direct_fill_picture(r, gg, b);
+            } else {
+                is_def = true;            /* the scene's clear, onto the screen */
+            }
+        }
         if (is_def || is_app) {
             if (is_def) g_def_cleared = true;
             uint8_t r, gg, b, a;
@@ -556,11 +623,38 @@ void dispatch_decoded(const gs::DecodedDraw &decoded) {
     }
 
     gs::DecodedDraw d = decoded;
+    if (d.src_is_surface) {
+        g_frame_presents++;
+        if (!d.to_default_fb || !dr::identity_present(d, host.scanout_w, host.scanout_h))
+            g_frame_1to1 = false;
+    }
+    if (g_direct) {
+        if (d.src_is_surface) {
+            /* The scene is on the screen already; the surface holds an old frame,
+               so drawing from it would only be worse than leaving it out. */
+            if (g_presented || !g_frame_1to1) g_pd_mismatch++;
+            else if (g_safe) direct_fill_border();
+            g_presented = true;
+            return;
+        }
+        if (!d.to_default_fb) {
+            if (g_presented) {            /* for a copy that already happened */
+                g_pd_mismatch++;
+                g_frame_1to1 = false;
+                return;
+            }
+            d.to_default_fb = true;
+            d.dst_fbo = 0;
+        } else if (!g_presented) {
+            g_pd_dropped++;
+            return;
+        }
+    }
     /* Safe area first: the rewrites below then see the remapped vertices, so a
        full-screen solid quad no longer covers the target and is not turned into
        a FILL over the black border. */
     if (g_safe && d.to_default_fb) {
-        if (!g_def_cleared) {
+        if (!g_def_cleared && !g_direct) {   /* direct: the border is filled at the copy */
             RSurface def{};
             def.w = host.scanout_w;
             def.h = host.scanout_h;
@@ -574,15 +668,24 @@ void dispatch_decoded(const gs::DecodedDraw &decoded) {
        quad becomes a FILL, a large rotated sprite samples an upright copy. */
     {
         uint8_t c[4];
-        if ((g_rewrite & RW_FILL) && dr::solid_cover(d, host.scanout_w, host.scanout_h, c)) {
+        int r[4];
+        if ((g_rewrite & RW_FILL) && dr::solid_rect(d, host.scanout_w, host.scanout_h, c, r)) {
             RSurface dst{};
             dst.w = host.scanout_w;
             dst.h = host.scanout_h;
             dst.fbo = d.dst_fbo;
             RSurface *s = g_sw_surfaces ? ((d.dst_fbo == 0) ? &g_surf.def : &g_surf.app) : &dst;
-            g_backend->clear(s, c[0], c[1], c[2], c[3]);
-            g_rw_fills++;
-            return;
+            if (r[2] == host.scanout_w && r[3] == host.scanout_h) {
+                g_backend->clear(s, c[0], c[1], c[2], c[3]);
+                g_rw_fills++;
+                return;
+            }
+            /* Smaller rects stay triangles: a FILL ends the backend's batch. */
+            if (!g_sw_surfaces && r[2] * r[3] >= kMinFillPx) {
+                RasterBackend_MFGPU_FillRect(s, r[0], r[1], r[2], r[3], c[0], c[1], c[2]);
+                g_rw_fills++;
+                return;
+            }
         }
         if ((g_rewrite & RW_UNROTATE) &&
             dr::unrotate(d, host.scanout_w, host.scanout_h, RasterBackend_MFGPU_InvalidateTex))
@@ -739,7 +842,7 @@ int glue_init(const MisterGlueHost *h) {
     const char *fab = getenv("MISTER_GLUE_FABRIC");
     g_fabric = fab && *fab == '1';
     const char *rw = getenv("MISTER_GLUE_REWRITE");
-    if (rw && *rw) g_rewrite = atoi(rw) & (RW_FILL | RW_UNROTATE);
+    if (rw && *rw) g_rewrite = atoi(rw) & (RW_FILL | RW_UNROTATE | RW_DIRECT);
     const char *st = getenv("MISTER_GLUE_STATS");
     g_log_stats = st && *st == '1';
 
@@ -808,6 +911,15 @@ int glue_present() {
         dr::frame_end();
         g_def_cleared = false;
         safe_area_poll();     /* between frames: the next frame uses the new rect whole */
+        if (g_frame_presents)
+            g_present_1to1 = g_frame_presents == 1 && g_frame_1to1;
+        else if (!g_frame_1to1)
+            g_present_1to1 = false;
+        g_direct = (g_rewrite & RW_DIRECT) && g_present_1to1 && safe_area_is_move() && !g_sw_surfaces;
+        if (g_direct) g_pd_frames++;
+        g_presented = false;
+        g_frame_presents = 0;
+        g_frame_1to1 = true;
         vctrl_publish();   /* tell the scanout reader a new frame is ready */
         pace_frame();
     }
@@ -818,7 +930,8 @@ int glue_present() {
               "(shader %u prog %u mode %u attrib %u tex %u blend %u) "
               "tex[unbound %u missing %u invalid %u never-uploaded %u last id=%u %ux%u] "
               "rej[up %u sub %u fmt=0x%x type=0x%x copytex %u] surfdraws %u "
-              "slots[tex %d buf %d prog %d shader %d fbo %d] rewrite[fill %u unrotate %u]",
+              "slots[tex %d buf %d prog %d shader %d fbo %d] rewrite[fill %u unrotate %u] "
+              "direct[frames %u dropped %u mismatch %u]",
               g_frames, s.draws_seen, s.draws_decoded, s.draws_fallback,
               s.fallback_custom_shader, s.fallback_program, s.fallback_mode,
               s.fallback_attrib, s.fallback_texture, s.fallback_blend,
@@ -826,8 +939,10 @@ int glue_present() {
               s.last_bad_tex, s.last_bad_w, s.last_bad_h,
               s.uploads_rejected, s.subuploads_rejected, s.last_rej_fmt,
               s.last_rej_type, s.copytex_calls, s.src_surface_draws,
-              u.textures, u.buffers, u.programs, u.shaders, u.fbos, g_rw_fills, g_rw_unrotated);
+              u.textures, u.buffers, u.programs, u.shaders, u.fbos, g_rw_fills, g_rw_unrotated,
+              g_pd_frames, g_pd_dropped, g_pd_mismatch);
         g_rw_fills = g_rw_unrotated = 0;
+        g_pd_frames = g_pd_dropped = g_pd_mismatch = 0;
         gs::stats_reset();
     }
     return g_fabric ? 1 : 0;
