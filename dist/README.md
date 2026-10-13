@@ -87,6 +87,17 @@ little softer than pixel for pixel on fine pixel art, because 240 lines are draw
 in use is logged at start-up in `donutdodo.log` (`misterglue: safe area ...`). An invalid value is logged and the
 picture is shown unscaled. The file is yours: installing a new release does not replace it.
 
+## Dev mode (testing)
+
+Create `games/DonutDodo/dev.cfg` (it can be empty) and restart the game. While it exists:
+
+- Tap **R** in a level to warp to the next level, or **L** to the previous one. Anywhere else (menu, attract, game over), **R** starts a game.
+- **L + R** together turn invincibility on or off. It is on at start.
+- The level shows briefly at the bottom of the screen and is logged in `donutdodo.log` (`mister_dev: ...`).
+
+Optional lines in `dev.cfg`: `invincible = 0` (start without it), `start_level = N` (1–10, or `bonus`; where **R** starts a game), `mode = medium_mode` (or `easy_mode`, `speedrun_mode`).
+Level 6 is the bonus level, and levels 6–10 replay maps 1–5 at the higher difficulty, as in a normal game. Delete the file to turn dev mode off.
+
 ## Notes
 
 - Saves and settings go to `games/DonutDodo/conf/`.

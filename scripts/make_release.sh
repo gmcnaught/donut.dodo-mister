@@ -47,7 +47,7 @@ G=$OUT/games/DonutDodo
 rm -rf "$OUT"; mkdir -p "$OUT/_Other" "$G/libs" "$G/gamedata"
 python3 "$PLAT/tools/mister_platform.py" render "$ROOT/mister-port.toml" --out "$OUT" --hook-binary "$HOOK_BIN"
 cp "$ROOT/dist/README.md" "$G/README.md"
-mkdir -p "$G/port" && cp "$ROOT/src/godot/mister_layout.gd" "$G/port/"
+mkdir -p "$G/port" && cp "$ROOT/src/godot/mister_layout.gd" "$ROOT/src/godot/mister_dev.gd" "$G/port/"
 cp "$ROOT/LICENSE" "$ROOT/LICENSING.md" "$G/"
 docker run --rm -v "$(dirname "$ENGINE")":/i:ro -v "$G":/o "$IMAGE" \
 	arm-linux-gnueabihf-strip -o /o/frt_3.5.2 "/i/$(basename "$ENGINE")"

@@ -13,6 +13,10 @@
 #   hud_offset = N in display.cfg (MISTER_GLUE_SAFE_AREA_FILE)
 #   MISTER_HUD_OFFSET
 #   0: the game's own layout.
+#
+# Dev mode: with games/DonutDodo/dev.cfg present (or MISTER_DEV=1) it also adds
+# mister_dev.gd, from this script's folder, as a child: level warp and
+# invincibility for testing. Releases ship no dev.cfg.
 extends Node
 
 const KEY := "hud_offset"
@@ -28,6 +32,19 @@ func _ready():
 	cfg_offset = _read_cfg_offset()
 	print("mister_layout: hud_offset=%d" % cfg_offset)
 	get_tree().connect("node_added", self, "_on_node_added")
+	_start_dev_mode()
+
+
+func _start_dev_mode():
+	var port_dir: String = get_script().resource_path.get_base_dir()   # .../games/DonutDodo/port
+	var cfg := port_dir.get_base_dir() + "/dev.cfg"
+	if OS.get_environment("MISTER_DEV") != "1" and not File.new().file_exists(cfg):
+		return
+	var dev_script = load(port_dir + "/mister_dev.gd")
+	if dev_script == null:
+		print("mister_layout: dev mode wanted, but %s/mister_dev.gd did not load" % port_dir)
+		return
+	add_child(dev_script.new(cfg))
 
 
 func _read_cfg_offset() -> int:
