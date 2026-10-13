@@ -88,6 +88,7 @@ bool g_log_stats   = false;
 enum { RW_FILL = 1, RW_UNROTATE = 2, RW_DIRECT = 4 };
 int  g_rewrite     = RW_FILL | RW_UNROTATE | RW_DIRECT;
 unsigned g_rw_fills = 0, g_rw_unrotated = 0;   /* per stats window */
+constexpr int kMinFillPx = 64 * 64;   /* solid rects below this stay triangles */
 
 /* Direct present (draw_rewrite.h identity_present). While the last frame that
    presented copied the app surface 1:1 (g_present_1to1), the next frame draws
@@ -625,15 +626,24 @@ void dispatch_decoded(const gs::DecodedDraw &decoded) {
        quad becomes a FILL, a large rotated sprite samples an upright copy. */
     {
         uint8_t c[4];
-        if ((g_rewrite & RW_FILL) && dr::solid_cover(d, host.scanout_w, host.scanout_h, c)) {
+        int r[4];
+        if ((g_rewrite & RW_FILL) && dr::solid_rect(d, host.scanout_w, host.scanout_h, c, r)) {
             RSurface dst{};
             dst.w = host.scanout_w;
             dst.h = host.scanout_h;
             dst.fbo = d.dst_fbo;
             RSurface *s = g_sw_surfaces ? ((d.dst_fbo == 0) ? &g_surf.def : &g_surf.app) : &dst;
-            g_backend->clear(s, c[0], c[1], c[2], c[3]);
-            g_rw_fills++;
-            return;
+            if (r[2] == host.scanout_w && r[3] == host.scanout_h) {
+                g_backend->clear(s, c[0], c[1], c[2], c[3]);
+                g_rw_fills++;
+                return;
+            }
+            /* Smaller rects stay triangles: a FILL ends the backend's batch. */
+            if (!g_sw_surfaces && r[2] * r[3] >= kMinFillPx) {
+                RasterBackend_MFGPU_FillRect(s, r[0], r[1], r[2], r[3], c[0], c[1], c[2]);
+                g_rw_fills++;
+                return;
+            }
         }
         if ((g_rewrite & RW_UNROTATE) &&
             dr::unrotate(d, host.scanout_w, host.scanout_h, RasterBackend_MFGPU_InvalidateTex))

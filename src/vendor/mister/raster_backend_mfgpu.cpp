@@ -4149,6 +4149,32 @@ extern "C" void RasterBackend_MFGPU_InvalidateTex(uint32_t id) {
         }
 }
 
+// Fill an axis-aligned rect of d with an opaque colour: one ring FILL (~1 fabric
+// cycle/px through comp_pipeline) where the same rect as a TRILIST costs ~6.
+// Clipped to the target. Ordered like a draw: a deferred full-screen clear on
+// the same target is emitted first, since a partial fill cannot cover it.
+extern "C" void RasterBackend_MFGPU_FillRect(RSurface *d, int x, int y, int w, int h,
+                                            uint8_t r, uint8_t g, uint8_t b) {
+    if (!g_inited || !d) return;
+    mf_ensure_frame();
+    if (g_frame_dropped) return;   // [in-flight-batch guard] emit nothing this frame
+    g_last_draw.valid = false;     // [duplicate-draw elimination] a fill breaks the run
+    mf_batch_flush();
+    mf_select_target(d->fbo);
+    const int tw = d->w < BLT_FB_WIDTH  ? d->w : BLT_FB_WIDTH;
+    const int th = d->h < BLT_FB_HEIGHT ? d->h : BLT_FB_HEIGHT;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > tw) w = tw - x;
+    if (y + h > th) h = th - y;
+    if (w <= 0 || h <= 0) return;
+    const int pc_target = mf_pc_slot_of(g_cur_target);
+    int fw, fh; uint16_t fc;
+    if (mf_pc_take(&g_pc, pc_target, &fw, &fh, &fc))
+        blt_fill(&g_e, 0, 0, fw, fh, fc);
+    blt_fill(&g_e, x, y, w, h, mf_rgb565(r, g, b));
+}
+
 extern "C" const RasterBackend backend_mfgpu = {
     "mfgpu", mf_frame_begin, mf_clear, mf_draw, mf_present, mf_frame_end,
 };

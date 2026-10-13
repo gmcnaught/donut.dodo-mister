@@ -2,10 +2,11 @@
   Draw rewrites that cut fabric time without changing a pixel. Both act on a
   decoded draw before it reaches the RasterBackend.
 
-  solid_cover: an opaque one-colour quad over the whole target -- Godot's black
-  ColorRect behind every level -- costs ~6 fabric cycles per pixel as a textured
-  TRILIST (~4.7 ms at 320x240) but 1 cycle as a FILL. The caller issues it as
-  the backend's clear() instead.
+  solid_rect: an opaque one-colour rectangle -- Godot's black ColorRect behind
+  every level, the HUD bar, the "GET READY!" card over a level's first seconds
+  -- costs ~6 fabric cycles per pixel as a textured TRILIST (~4.7 ms for the
+  whole 320x240 screen) but 1 cycle as a FILL. The caller issues it as the
+  backend's clear() when it covers the target, else as a rect FILL.
 
   unrotate: the fabric's texel cache is two 256-byte SDRAM lines plus a 2 KB
   direct-mapped qword cache, so a sprite sampled at an angle walks onto a new
@@ -32,8 +33,12 @@ namespace dr {
 /* Cache keys of scratch textures: above any GL name, below gs::kWhiteTexKeyBit. */
 constexpr uint32_t kScratchKeyBase = 0x40000000u;
 
-/* True when d is an opaque single-colour quad covering the whole w x h target;
-   rgba receives the colour. */
+/* True when d is an opaque single-colour axis-aligned quad whose edges inside
+   the w x h target lie on pixel boundaries; rgba receives the colour and rect
+   the pixels it covers (x, y, w, h), clipped to the target. */
+bool solid_rect(const gs::DecodedDraw &d, int w, int h, uint8_t rgba[4], int rect[4]);
+
+/* solid_rect covering the whole target. */
 bool solid_cover(const gs::DecodedDraw &d, int w, int h, uint8_t rgba[4]);
 
 /* Rewrite a large rotated textured quad to sample an axis-aligned scratch copy.

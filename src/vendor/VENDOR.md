@@ -11,3 +11,8 @@ Do not edit in place without recording the delta here.
   `maldita.castilla-mister` branch `donutdodo/fb-320x240`. Re-vendoring from
   gmloader-next will silently reset this to 288x216 — which shows up not as a
   build error but as triangles clipped to the wrong rectangle on hardware.
+
+- `mister/raster_backend_mfgpu.cpp`, `mister/raster_backend.h`:
+  `RasterBackend_MFGPU_FillRect` added (opaque rect as one ring FILL; emits a
+  pending deferred clear on the same target first). Used by the glue's
+  `dr::solid_rect` rewrite. Not in gmloader-next.

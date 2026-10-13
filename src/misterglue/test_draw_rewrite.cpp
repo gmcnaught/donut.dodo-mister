@@ -171,6 +171,62 @@ void test_solid_cover() {
     EXPECT(!dr::solid_cover(d, W, H, c), "additive blend is not a fill");
 }
 
+/* An opaque black quad x0,y0 - x1,y1 from an 8x8 black texture, as Godot's
+   ColorRects reach the glue. */
+uint8_t g_black[8 * 8 * 4];
+void black_rect(gs::DecodedDraw &d, BVtx *v, float x0, float y0, float x1, float y1) {
+    for (int i = 0; i < 8 * 8; i++) { g_black[i * 4 + 3] = 255; }
+    const float xs[4] = { x0, x1, x1, x0 }, ys[4] = { y0, y0, y1, y1 };
+    const int order[6] = { 0, 1, 2, 0, 2, 3 };
+    for (int i = 0; i < 6; i++) {
+        v[i] = BVtx{};
+        v[i].x = xs[order[i]]; v[i].y = ys[order[i]];
+        v[i].u = v[i].v = 0.5f;
+        v[i].r = v[i].g = v[i].b = v[i].a = 1.0f;
+    }
+    d = gs::DecodedDraw{};
+    d.verts = v; d.tris = 2; d.blend = RB_ALPHA;
+    d.tex = RTexture{ g_black, 8, 8, 1, 1, RTEX_RGBA8888, 1 };
+}
+
+void check_rect_matches(float x0, float y0, float x1, float y1) {
+    static Surf ref, got;
+    ref.reset(); got.reset();
+    BVtx v[6];
+    gs::DecodedDraw d;
+    black_rect(d, v, x0, y0, x1, y1);
+    uint8_t c[4]; int r[4];
+    const bool ok = dr::solid_rect(d, W, H, c, r);
+    EXPECT(ok, "rect (%.0f,%.0f)-(%.0f,%.0f) must become a fill", x0, y0, x1, y1);
+    if (!ok) return;
+    Blitter_RasterDraw(&ref.s, v, 2, &d.tex, d.blend, 0.0f, 1);
+    for (int y = r[1]; y < r[1] + r[3]; y++)
+        for (int x = r[0]; x < r[0] + r[2]; x++) memcpy(got.px + (y * W + x) * 4, c, 4);
+    int off = 0;
+    for (int i = 0; i < W * H; i++) if (memcmp(ref.px + i * 4, got.px + i * 4, 3) != 0) off++;
+    EXPECT(off == 0, "rect (%.0f,%.0f)-(%.0f,%.0f): fill %d,%d %dx%d differs from the quad at %d pixels",
+           x0, y0, x1, y1, r[0], r[1], r[2], r[3], off);
+}
+
+void test_solid_rect() {
+    check_rect_matches(0, 4, 320, 244);     /* Level 3's GET READY card */
+    check_rect_matches(0, -2, 320, 22);     /* the HUD bar */
+    check_rect_matches(-8, -8, 328, 248);   /* the full-screen ColorRect */
+    check_rect_matches(17, 33, 101, 200);
+
+    BVtx v[6];
+    gs::DecodedDraw d;
+    uint8_t c[4]; int r[4];
+    black_rect(d, v, 0, 4.5f, 320, 244);
+    EXPECT(!dr::solid_rect(d, W, H, c, r), "an edge between pixel boundaries is left to the rasterizer");
+    black_rect(d, v, 0, 4, 320, 244);
+    EXPECT(dr::solid_rect(d, W, H, c, r) && r[0] == 0 && r[1] == 4 && r[2] == 320 && r[3] == 236,
+           "card rect %d,%d %dx%d, want 0,4 320x236", r[0], r[1], r[2], r[3]);
+    EXPECT(!dr::solid_cover(d, W, H, c), "a rect short of the top is not a full cover");
+    black_rect(d, v, 400, 4, 500, 244);
+    EXPECT(!dr::solid_rect(d, W, H, c, r), "an off-screen rect writes nothing");
+}
+
 /* Godot's viewport copy as the device logs it: a 320x240 quad, uv 0..1 with
    v=1 at the top (GL rows), blend none, white. */
 void present_quad(BVtx *v) {
@@ -233,6 +289,7 @@ void test_identity_present() {
 int main() {
     test_unrotate();
     test_solid_cover();
+    test_solid_rect();
     test_identity_present();
     if (g_fail) { printf("test_draw_rewrite: %d failure(s)\n", g_fail); return 1; }
     printf("test_draw_rewrite: ok\n");

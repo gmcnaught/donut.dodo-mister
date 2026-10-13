@@ -39,6 +39,11 @@ void RasterBackend_SW_SetThreads(int n);
  * re-upload/delete). No-op when backend_sw is selected or nothing is cached. */
 void RasterBackend_MFGPU_InvalidateTex(uint32_t id);
 
+/* mfgpu back-end only: fill x,y,w,h of d (clipped) with an opaque colour as one
+ * fabric FILL. No-op when backend_sw is selected. */
+void RasterBackend_MFGPU_FillRect(RSurface *d, int x, int y, int w, int h,
+                                  uint8_t r, uint8_t g, uint8_t b);
+
 /* mfgpu back-end only [Phase 3 Stage B]: read the fabric's scanout instrument
  * (openbor_video_reader.sv, byte 0x3BFB0018) out of the back-end's existing DDR
  * mapping. *frame_cnt = monotonic scanout frame count (+1 per displayed frame

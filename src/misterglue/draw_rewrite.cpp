@@ -84,7 +84,7 @@ bool identity_present(const gs::DecodedDraw &d, int w, int h) {
     return true;
 }
 
-bool solid_cover(const gs::DecodedDraw &d, int w, int h, uint8_t rgba[4]) {
+bool solid_rect(const gs::DecodedDraw &d, int w, int h, uint8_t rgba[4], int rect[4]) {
     if (d.tris != 2 || d.src_is_surface || !d.verts) return false;
     if (d.blend != RB_NONE && d.blend != RB_ALPHA) return false;
     uint8_t tx[4];
@@ -96,7 +96,20 @@ bool solid_cover(const gs::DecodedDraw &d, int w, int h, uint8_t rgba[4]) {
             !near(v[i].b, v[0].b) || !near(v[i].a, v[0].a)) return false;
     float x0, y0, x1, y1;
     if (!axis_rect(v, &x0, &y0, &x1, &y1)) return false;
-    if (x0 > 0.0f || y0 > 0.0f || x1 < (float)w || y1 < (float)h) return false;
+    /* The pixels a FILL writes: an edge inside the target must sit on a pixel
+       boundary, so no pixel centre is in doubt; one outside is clipped. */
+    auto edge = [](float e, int lim, int *out) {
+        if (e <= 0.0f) { *out = 0; return true; }
+        if (e >= (float)lim) { *out = lim; return true; }
+        const float r = roundf(e);
+        if (fabsf(e - r) > 1e-3f) return false;
+        *out = (int)r;
+        return true;
+    };
+    int ix0, iy0, ix1, iy1;
+    if (!edge(x0, w, &ix0) || !edge(x1, w, &ix1) || !edge(y0, h, &iy0) || !edge(y1, h, &iy1))
+        return false;
+    if (ix1 <= ix0 || iy1 <= iy0) return false;
 
     /* frag = vertex colour * texel; it must be opaque for a FILL to equal it. */
     const float a = v[0].a * tx[3] / 255.0f;
@@ -107,7 +120,13 @@ bool solid_cover(const gs::DecodedDraw &d, int w, int h, uint8_t rgba[4]) {
         rgba[k] = (uint8_t)(f < 0.0f ? 0.0f : f > 255.0f ? 255.0f : f + 0.5f);
     }
     rgba[3] = 255;
+    rect[0] = ix0; rect[1] = iy0; rect[2] = ix1 - ix0; rect[3] = iy1 - iy0;
     return true;
+}
+
+bool solid_cover(const gs::DecodedDraw &d, int w, int h, uint8_t rgba[4]) {
+    int r[4];
+    return solid_rect(d, w, h, rgba, r) && r[0] == 0 && r[1] == 0 && r[2] == w && r[3] == h;
 }
 
 bool unrotate(gs::DecodedDraw &d, int w, int h, void (*invalidate)(uint32_t key)) {
