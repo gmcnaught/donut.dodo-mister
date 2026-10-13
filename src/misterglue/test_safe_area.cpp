@@ -81,6 +81,12 @@ int main() {
     expect_cfg("", false, "");
     expect_cfg("safe_area=crt", true, "crt");
 
+    /* C_STATUS low32: bits 4:3 HUD Down, 7:5 Picture Up; bits 2:0 are other OSD levels. */
+    if (safe_area::osd_hud_down(0x07u) != 0 || safe_area::osd_picture_up(0x07u) != 0) { printf("FAIL osd low bits\n"); g_fail++; }
+    if (safe_area::osd_hud_down(2u << 3) != 8 || safe_area::osd_hud_down(3u << 3) != 12) { printf("FAIL osd hud\n"); g_fail++; }
+    if (safe_area::osd_picture_up(2u << 5) != 4 || safe_area::osd_picture_up(7u << 5) != 16) { printf("FAIL osd up\n"); g_fail++; }
+    if (safe_area::osd_picture_up(0xFFFFFF00u | (1u << 5)) != 2) { printf("FAIL osd up high bits\n"); g_fail++; }
+
     int sh = 99;
     if (!safe_area::parse_shift("8", &sh) || sh != 8) { printf("FAIL shift 8\n"); g_fail++; }
     if (!safe_area::parse_shift(" -3 ", &sh) || sh != -3) { printf("FAIL shift -3\n"); g_fail++; }

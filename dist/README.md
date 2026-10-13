@@ -70,16 +70,17 @@ The change takes effect immediately. If the edges are still cut off (a CRT, or a
 | `off` | Unscaled, pixel for pixel: at Vertical Lines 224 the top 7 and bottom 9 lines are not shown |
 | `WxH` or `WxH+X+Y` | An exact size (and position) in the game's 320×240 pixels, e.g. `288x216` |
 
-For a CRT that hides the top and bottom of the 240-line picture, two more lines in the same file help without
-scaling anything:
+For a CRT that hides the top and bottom of the 240-line picture, two OSD options move things without scaling
+anything. Both start at +0 and take effect immediately:
 
-    hud_offset = 8
-    v_shift = 3
+- **OSD → HUD Down** (+0, +4, +8, +12) moves the score bar down that many rows (the black bar behind it stays), clear
+  of the top edge. +8 puts the labels where the scores were; the scores then overlap the top corners of the level.
+- **OSD → Picture Up** (+0 … +16) moves the whole picture up that many rows, bringing the bottom floor into view.
+  The rows it vacates at the bottom are black. Together with **V Position** this sets where the picture sits on the
+  tube. HUD Down +8 with Picture Up +4 suits a typical consumer set.
 
-- `hud_offset = N` moves the score bar down N rows (the black bar behind it stays), clear of the top edge. 8 puts
-  the labels where the scores were; the scores then overlap the top corners of the level.
-- `v_shift = N` moves the whole picture up N rows (up to 16; negative moves it down), bringing the bottom floor
-  into view. Together with **OSD → V Position** this sets where the picture sits on the tube.
+With an option at +0, `display.cfg` can still set the same thing: `hud_offset = N` and `v_shift = N` (−16…16; a
+negative `v_shift` moves the picture down).
 
 The sizes follow the Vertical Lines option (`crt` is 90% of whichever window the core shows). Any scaled setting is a
 little softer than pixel for pixel on fine pixel art, because 240 lines are drawn into fewer. The setting

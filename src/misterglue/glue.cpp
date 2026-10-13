@@ -216,7 +216,9 @@ struct SafeAreaCfg {
     safe_area::Ratio dar{0, 0};           /* MISTER_GLUE_DAR: how the core shows the window */
     char spec[64] = "off";
     const char *src = "default";
-    int  v_shift = 0;                     /* rows up, after the safe area (v_shift=) */
+    int  v_shift = 0;                     /* display.cfg v_shift= / MISTER_GLUE_V_SHIFT */
+    int  osd_up = 0;                      /* OSD Picture Up rows (0: v_shift applies) */
+    int  osd_hud = -1;                    /* OSD HUD Down rows, as last published */
     int  full = -1;                       /* the mode the rect was last resolved for */
 } g_sa;
 
@@ -225,6 +227,8 @@ struct SafeAreaCfg {
    control block's page; cores that predate the option leave the bit 0, which is
    the short window -- the right answer for them. MISTER_GLUE_OSD_LINES=1 enables. */
 const uint32_t kBltCtrlBase = 0x3B000000u, kCStatusOff = 0x30u, kCStatusVFull = 1u << 2;
+/* Bits 7:3 of the same word carry the OSD HUD Down / Picture Up steps
+   (safe_area::osd_hud_down / osd_picture_up). */
 volatile const uint8_t *g_bltctrl = nullptr;
 int g_bltctrl_fd = -1;
 
@@ -255,14 +259,15 @@ void safe_area_set_mode(bool full) {
         logf_("misterglue: safe area \"%s\" (%s) ignored: %s", g_sa.spec, g_sa.src, err);
         r = safe_area::Rect{0, 0, fb_w, fb_h};
     }
-    g_safe  = !(r.x == 0 && r.y == 0 && r.w == fb_w && r.h == fb_h) || g_sa.v_shift != 0;
+    const int shift = g_sa.osd_up ? g_sa.osd_up : g_sa.v_shift;   /* a non-zero OSD step wins */
+    g_safe  = !(r.x == 0 && r.y == 0 && r.w == fb_w && r.h == fb_h) || shift != 0;
     g_sa_sx = (float)r.w / (float)fb_w;
     g_sa_sy = (float)r.h / (float)fb_h;
     g_sa_ox = (float)r.x;
-    g_sa_oy = (float)(r.y - g_sa.v_shift);
+    g_sa_oy = (float)(r.y - shift);
     g_sa.full = full ? 1 : 0;
-    logf_("misterglue: safe area %dx%d+%d+%d v_shift %d (\"%s\" from %s; visible %dx%d+%d+%d at %d:%d%s)",
-          r.w, r.h, r.x, r.y, g_sa.v_shift, g_sa.spec, g_sa.src, vis.w, vis.h, vis.x, vis.y,
+    logf_("misterglue: safe area %dx%d+%d+%d v_shift %d%s (\"%s\" from %s; visible %dx%d+%d+%d at %d:%d%s)",
+          r.w, r.h, r.x, r.y, shift, g_sa.osd_up ? " (OSD Picture Up)" : "", g_sa.spec, g_sa.src, vis.w, vis.h, vis.x, vis.y,
           g_sa.dar.num, g_sa.dar.den,
           g_bltctrl ? (full ? ", core 240 lines" : ", core short window") : "");
 }
@@ -272,7 +277,21 @@ void safe_area_poll(void) {
     if (!g_bltctrl) return;
     const uint32_t st = *(volatile const uint32_t *)(g_bltctrl + kCStatusOff);
     const int full = (st & kCStatusVFull) ? 1 : 0;
-    if (full != g_sa.full) safe_area_set_mode(full);
+    const int up = safe_area::osd_picture_up(st);
+    if (full != g_sa.full || up != g_sa.osd_up) {
+        g_sa.osd_up = up;
+        safe_area_set_mode(full);
+    }
+    /* HUD Down is applied by the port's GDScript (src/godot/mister_layout.gd),
+       which runs on this same main thread and reads it with OS.get_environment. */
+    const int hud = safe_area::osd_hud_down(st);
+    if (hud != g_sa.osd_hud) {
+        char v[8];
+        snprintf(v, sizeof v, "%d", hud);
+        setenv("MISTER_HUD_OFFSET_OSD", v, 1);
+        g_sa.osd_hud = hud;
+        logf_("misterglue: OSD HUD Down %d", hud);
+    }
 }
 
 /* MISTER_GLUE_VISIBLE: the window the core scans out (default: the whole frame).

@@ -49,8 +49,9 @@ MISTER_GLUE_OSD_LINES      = "1"
 MISTER_GLUE_SAFE_AREA      = "fit"
 MISTER_GLUE_SAFE_AREA_FILE = "$MH_GAMEDIR/display.cfg"
 # CRT layout (src/godot/mister_layout.gd, port-owned): the engine registers it as
-# an extra autoload (patches/0008). display.cfg hud_offset=N moves the HUD down N
-# rows; v_shift=N (glue) moves the picture up N rows. Both default to 0.
+# an extra autoload (patches/0008). OSD HUD Down / Picture Up (C_STATUS bits 7:3,
+# read by the glue each frame) move the HUD down / the picture up; at +0,
+# display.cfg hud_offset=N / v_shift=N apply. All default to 0.
 MISTER_GODOT_AUTOLOAD      = "MisterLayout=$MH_GAMEDIR/port/mister_layout.gd"
 SDL_MISTER_DDR      = "0"                # the fabric publishes frames, not our readback
 # The FPGA drains a DDR audio ring; gm_audio SRC_RATE must equal the driver's 48 kHz.

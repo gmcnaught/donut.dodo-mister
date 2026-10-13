@@ -93,6 +93,18 @@ inline Rect centre_in(const Rect &vis, int w, int h) {
 
 enum { kMaxShift = 16 };
 
+/* The core's OSD CRT layout options, mirrored raw into C_STATUS low32 (DonutDodo
+   RBF, maldita.castilla-mister Maldita.sv): bits 4:3 HUD Down, bits 7:5 Picture
+   Up. Older cores and Cash Cow DX leave them 0. Rows for each step: */
+inline int osd_hud_down(unsigned status) {
+    static const int rows[4] = {0, 4, 8, 12};
+    return rows[(status >> 3) & 3u];
+}
+inline int osd_picture_up(unsigned status) {
+    static const int rows[8] = {0, 2, 4, 6, 8, 10, 12, 16};
+    return rows[(status >> 5) & 7u];
+}
+
 /* v_shift: an optional sign and decimal digits, |N| <= kMaxShift. */
 inline bool parse_shift(const char *s, int *out) {
     s = skip_ws(s);
