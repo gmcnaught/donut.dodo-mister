@@ -37,7 +37,8 @@ VENDOR_C   = $(VENDOR)/mfgpu/host/blt_emitter.c \
              $(VENDOR)/mfgpu/refmodel/blt_tri.c \
              $(VENDOR)/mister/native_video_writer.c
 GLUE_CXX   = $(SRCDIR)/misterglue/glue.cpp \
-             $(SRCDIR)/misterglue/godot_shadow.cpp
+             $(SRCDIR)/misterglue/godot_shadow.cpp \
+             $(SRCDIR)/misterglue/draw_rewrite.cpp
 
 OBJS = $(patsubst %.cpp,$(OUT)/%.o,$(VENDOR_CXX) $(GLUE_CXX)) \
        $(patsubst %.c,$(OUT)/%.o,$(VENDOR_C))
@@ -61,14 +62,23 @@ vendor-only: $(patsubst %.cpp,$(OUT)/%.o,$(VENDOR_CXX)) $(patsubst %.c,$(OUT)/%.
 
 # Host unit tests (native compiler, no cross toolchain needed).
 HOSTCXX ?= g++
-test: $(OUT)/host/test_godot_shadow
+test: $(OUT)/host/test_godot_shadow $(OUT)/host/test_draw_rewrite
 	$(OUT)/host/test_godot_shadow
+	$(OUT)/host/test_draw_rewrite
 
 $(OUT)/host/test_godot_shadow: $(SRCDIR)/misterglue/test_godot_shadow.cpp \
                                $(SRCDIR)/misterglue/godot_shadow.cpp $(SRCDIR)/misterglue/godot_shadow.h
 	@mkdir -p $(dir $@)
 	$(HOSTCXX) -std=gnu++14 -Wall -Wextra -O2 -I$(VENDOR)/mister -I$(SRCDIR)/misterglue \
 		-o $@ $(SRCDIR)/misterglue/test_godot_shadow.cpp $(SRCDIR)/misterglue/godot_shadow.cpp -lm
+
+$(OUT)/host/test_draw_rewrite: $(SRCDIR)/misterglue/test_draw_rewrite.cpp \
+                               $(SRCDIR)/misterglue/draw_rewrite.cpp $(SRCDIR)/misterglue/draw_rewrite.h \
+                               $(VENDOR)/mister/blitter_raster.cpp
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=gnu++14 -Wall -Wextra -O2 -I$(VENDOR)/mister -I$(SRCDIR)/misterglue \
+		-o $@ $(SRCDIR)/misterglue/test_draw_rewrite.cpp $(SRCDIR)/misterglue/draw_rewrite.cpp \
+		$(VENDOR)/mister/blitter_raster.cpp -lm -lpthread
 
 clean:
 	rm -rf $(OUT)

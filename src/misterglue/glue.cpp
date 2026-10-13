@@ -10,6 +10,7 @@
 */
 #include "mister_glue_abi.h"
 #include "godot_shadow.h"
+#include "draw_rewrite.h"
 
 #include <stdarg.h>
 #include <fcntl.h>
@@ -81,6 +82,11 @@ MisterGlueHost host;
 bool g_inited      = false;
 bool g_fabric      = false;   /* MISTER_GLUE_FABRIC=1: let the fabric own drawing */
 bool g_log_stats   = false;
+/* draw_rewrite.h, as a bitmask for A/B runs: MISTER_GLUE_REWRITE=1 fill only,
+   2 unrotate only, 0 neither (default 3). */
+enum { RW_FILL = 1, RW_UNROTATE = 2 };
+int  g_rewrite     = RW_FILL | RW_UNROTATE;
+unsigned g_rw_fills = 0, g_rw_unrotated = 0;   /* per stats window */
 unsigned g_frames  = 0;
 
 const RasterBackend *g_backend = nullptr;
@@ -361,7 +367,7 @@ bool fabric_owns(const gs::DecodedDraw &d) {
     return gs::app_surface(&as_fbo, nullptr) && d.dst_fbo == as_fbo;
 }
 
-void dispatch_decoded(const gs::DecodedDraw &d) {
+void dispatch_decoded(const gs::DecodedDraw &decoded) {
     /* Keep the backend's view of the application surface current: it decides
        SET_TARGET(APPSURF) and BLT_F_SRC_SURFACE off these two ids. */
     static uint32_t reported_fbo, reported_tex;
@@ -372,6 +378,26 @@ void dispatch_decoded(const gs::DecodedDraw &d) {
         reported_fbo = as_fbo;
         reported_tex = as_tex;
         logf_("misterglue: app surface = fbo %u tex %u", as_fbo, as_tex);
+    }
+
+    /* Same pixels, fewer fabric cycles (draw_rewrite.h): a full-target solid
+       quad becomes a FILL, a large rotated sprite samples an upright copy. */
+    gs::DecodedDraw d = decoded;
+    {
+        uint8_t c[4];
+        if ((g_rewrite & RW_FILL) && dr::solid_cover(d, host.scanout_w, host.scanout_h, c)) {
+            RSurface dst{};
+            dst.w = host.scanout_w;
+            dst.h = host.scanout_h;
+            dst.fbo = d.dst_fbo;
+            RSurface *s = g_sw_surfaces ? ((d.dst_fbo == 0) ? &g_surf.def : &g_surf.app) : &dst;
+            g_backend->clear(s, c[0], c[1], c[2], c[3]);
+            g_rw_fills++;
+            return;
+        }
+        if ((g_rewrite & RW_UNROTATE) &&
+            dr::unrotate(d, host.scanout_w, host.scanout_h, RasterBackend_MFGPU_InvalidateTex))
+            g_rw_unrotated++;
     }
 
     RSurface dst{};
@@ -523,6 +549,8 @@ int glue_init(const MisterGlueHost *h) {
 
     const char *fab = getenv("MISTER_GLUE_FABRIC");
     g_fabric = fab && *fab == '1';
+    const char *rw = getenv("MISTER_GLUE_REWRITE");
+    if (rw && *rw) g_rewrite = atoi(rw) & (RW_FILL | RW_UNROTATE);
     const char *st = getenv("MISTER_GLUE_STATS");
     g_log_stats = st && *st == '1';
 
@@ -586,6 +614,7 @@ int glue_present() {
             dump_surface(&g_surf.app, "/tmp/glue_app.raw");
         }
         g_backend->frame_begin();
+        dr::frame_end();
         vctrl_publish();   /* tell the scanout reader a new frame is ready */
         pace_frame();
     }
@@ -596,7 +625,7 @@ int glue_present() {
               "(shader %u prog %u mode %u attrib %u tex %u blend %u) "
               "tex[unbound %u missing %u invalid %u never-uploaded %u last id=%u %ux%u] "
               "rej[up %u sub %u fmt=0x%x type=0x%x copytex %u] surfdraws %u "
-              "slots[tex %d buf %d prog %d shader %d fbo %d]",
+              "slots[tex %d buf %d prog %d shader %d fbo %d] rewrite[fill %u unrotate %u]",
               g_frames, s.draws_seen, s.draws_decoded, s.draws_fallback,
               s.fallback_custom_shader, s.fallback_program, s.fallback_mode,
               s.fallback_attrib, s.fallback_texture, s.fallback_blend,
@@ -604,7 +633,8 @@ int glue_present() {
               s.last_bad_tex, s.last_bad_w, s.last_bad_h,
               s.uploads_rejected, s.subuploads_rejected, s.last_rej_fmt,
               s.last_rej_type, s.copytex_calls, s.src_surface_draws,
-              u.textures, u.buffers, u.programs, u.shaders, u.fbos);
+              u.textures, u.buffers, u.programs, u.shaders, u.fbos, g_rw_fills, g_rw_unrotated);
+        g_rw_fills = g_rw_unrotated = 0;
         gs::stats_reset();
     }
     return g_fabric ? 1 : 0;

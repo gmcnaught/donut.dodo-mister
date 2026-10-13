@@ -1,0 +1,43 @@
+/*
+  Draw rewrites that cut fabric time without changing a pixel. Both act on a
+  decoded draw before it reaches the RasterBackend.
+
+  solid_cover: an opaque one-colour quad over the whole target -- Godot's black
+  ColorRect behind every level -- costs ~6 fabric cycles per pixel as a textured
+  TRILIST (~4.7 ms at 320x240) but 1 cycle as a FILL. The caller issues it as
+  the backend's clear() instead.
+
+  unrotate: the fabric's texel cache is two 256-byte SDRAM lines plus a 2 KB
+  direct-mapped qword cache, so a sprite sampled at an angle walks onto a new
+  texture row every ~1.4 pixels and nearly every pixel waits on SDRAM (Ferris
+  Wheel Frenzy: texwait 5-24 ms per frame for one 128x128 wheel). For a large
+  rotated quad we nearest-sample the texture on the CPU into a scratch texture
+  laid out in screen space, then draw the same triangles reading it row by row.
+  The scratch keys alternate by frame parity, so the texture a still-executing
+  frame reads is never the one being replaced.
+*/
+#ifndef DRAW_REWRITE_H
+#define DRAW_REWRITE_H
+
+#include <stdint.h>
+#include "godot_shadow.h"
+
+namespace dr {
+
+/* Cache keys of scratch textures: above any GL name, below gs::kWhiteTexKeyBit. */
+constexpr uint32_t kScratchKeyBase = 0x40000000u;
+
+/* True when d is an opaque single-colour quad covering the whole w x h target;
+   rgba receives the colour. */
+bool solid_cover(const gs::DecodedDraw &d, int w, int h, uint8_t rgba[4]);
+
+/* Rewrite a large rotated textured quad to sample an axis-aligned scratch copy.
+   Returns true when d now points at the scratch texture; invalidate(key) is
+   called first so the backend restages it. */
+bool unrotate(gs::DecodedDraw &d, int w, int h, void (*invalidate)(uint32_t key));
+
+/* Once per presented frame: flips the scratch key parity. */
+void frame_end();
+
+} /* namespace dr */
+#endif /* DRAW_REWRITE_H */
