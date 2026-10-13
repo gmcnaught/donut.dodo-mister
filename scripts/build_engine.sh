@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build the Donut Dodo engine: Godot 3.5.2-stable + FRT 2.1.0 (frt@33f739d in platform/frt,
-# patches 0002 and 0006 applied), armhf Cortex-A9, pruned to what the game uses (PLAN.md §1l):
+# patches 0002, 0006 and 0008 applied), armhf Cortex-A9, pruned to what the game uses (PLAN.md §1l):
 #   no 3D; modules kept: gdscript (.gdc scripts), freetype (DynamicFont), stb_vorbis (.oggstr music),
 #   webp (every .stex is WebP), navigation (3.5's Navigation2DServer needs its NavigationServer;
 #   without it the engine segfaults at start). disable_advanced_gui stays off: Options.tscn uses

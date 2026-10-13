@@ -70,6 +70,17 @@ The change takes effect immediately. If the edges are still cut off (a CRT, or a
 | `off` | Unscaled, pixel for pixel: at Vertical Lines 224 the top 7 and bottom 9 lines are not shown |
 | `WxH` or `WxH+X+Y` | An exact size (and position) in the game's 320×240 pixels, e.g. `288x216` |
 
+For a CRT that hides the top and bottom of the 240-line picture, two more lines in the same file help without
+scaling anything:
+
+    hud_offset = 8
+    v_shift = 3
+
+- `hud_offset = N` moves the score bar down N rows (the black bar behind it stays), clear of the top edge. 8 puts
+  the labels where the scores were; the scores then overlap the top corners of the level.
+- `v_shift = N` moves the whole picture up N rows (up to 16; negative moves it down), bringing the bottom floor
+  into view. Together with **OSD → V Position** this sets where the picture sits on the tube.
+
 The sizes follow the Vertical Lines option (`crt` is 90% of whichever window the core shows). Any scaled setting is a
 little softer than pixel for pixel on fine pixel art, because 240 lines are drawn into fewer. The setting
 in use is logged at start-up in `donutdodo.log` (`misterglue: safe area ...`). An invalid value is logged and the

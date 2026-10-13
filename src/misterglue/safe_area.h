@@ -18,6 +18,11 @@
     WxH            a WxH rect centred in the visible window
     WxH+X+Y        a WxH rect at X,Y in frame coordinates
 
+  v_shift = N (display.cfg, or MISTER_GLUE_V_SHIFT) moves the picture up N
+  rows after the safe area is applied (negative: down), -16..16, without
+  scaling: on a CRT it trades empty rows at the top for the floor at the
+  bottom. The vacated rows are the black border.
+
   "Visible window" is the part of the frame the core scans out
   (MISTER_GLUE_VISIBLE, WxH+X+Y, default: the whole frame).
 
@@ -84,6 +89,19 @@ inline bool parse_geometry(const char *s, Rect *r, bool *has_pos) {
 /* A w x h rect centred in vis (integer, rounding the margin down). */
 inline Rect centre_in(const Rect &vis, int w, int h) {
     return Rect{vis.x + (vis.w - w) / 2, vis.y + (vis.h - h) / 2, w, h};
+}
+
+enum { kMaxShift = 16 };
+
+/* v_shift: an optional sign and decimal digits, |N| <= kMaxShift. */
+inline bool parse_shift(const char *s, int *out) {
+    s = skip_ws(s);
+    int sign = 1;
+    if (*s == '-' || *s == '+') { sign = (*s == '-') ? -1 : 1; s++; }
+    int v;
+    if (!parse_uint(&s, &v) || *skip_ws(s) || v > kMaxShift) return false;
+    *out = sign * v;
+    return true;
 }
 
 /* "W:H" (surrounding whitespace allowed), both > 0. */

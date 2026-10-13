@@ -81,6 +81,15 @@ int main() {
     expect_cfg("", false, "");
     expect_cfg("safe_area=crt", true, "crt");
 
+    int sh = 99;
+    if (!safe_area::parse_shift("8", &sh) || sh != 8) { printf("FAIL shift 8\n"); g_fail++; }
+    if (!safe_area::parse_shift(" -3 ", &sh) || sh != -3) { printf("FAIL shift -3\n"); g_fail++; }
+    if (!safe_area::parse_shift("+16", &sh) || sh != 16) { printf("FAIL shift +16\n"); g_fail++; }
+    if (safe_area::parse_shift("17", &sh) || safe_area::parse_shift("", &sh) || safe_area::parse_shift("4px", &sh) ||
+        safe_area::parse_shift("-", &sh)) {
+        printf("FAIL shift accepted a bad value\n"); g_fail++;
+    }
+
     Ratio q{0, 0};
     if (!safe_area::parse_ratio("4:3", &q) || q.num != 4 || q.den != 3) { printf("FAIL ratio 4:3\n"); g_fail++; }
     if (!safe_area::parse_ratio(" 16:9 ", &q) || q.num != 16 || q.den != 9) { printf("FAIL ratio 16:9\n"); g_fail++; }

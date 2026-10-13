@@ -196,8 +196,8 @@ bool surfaces_init(int w, int h) {
     return true;
 }
 
-/* Read safe_area= from the display.cfg file, if it exists and has one. */
-bool read_cfg_safe_area(const char *path, char *val, size_t val_sz) {
+/* Read key= from the display.cfg file, if it exists and has one. */
+bool read_cfg(const char *path, const char *key, char *val, size_t val_sz) {
     if (!path || !*path) return false;
     FILE *f = fopen(path, "rb");
     if (!f) return false;
@@ -205,7 +205,7 @@ bool read_cfg_safe_area(const char *path, char *val, size_t val_sz) {
     size_t n = fread(text, 1, sizeof(text) - 1, f);
     fclose(f);
     text[n] = 0;
-    return safe_area::cfg_value(text, "safe_area", val, val_sz);
+    return safe_area::cfg_value(text, key, val, val_sz);
 }
 
 /* Safe-area configuration, resolved once at init; the rect itself is recomputed
@@ -216,6 +216,7 @@ struct SafeAreaCfg {
     safe_area::Ratio dar{0, 0};           /* MISTER_GLUE_DAR: how the core shows the window */
     char spec[64] = "off";
     const char *src = "default";
+    int  v_shift = 0;                     /* rows up, after the safe area (v_shift=) */
     int  full = -1;                       /* the mode the rect was last resolved for */
 } g_sa;
 
@@ -254,14 +255,15 @@ void safe_area_set_mode(bool full) {
         logf_("misterglue: safe area \"%s\" (%s) ignored: %s", g_sa.spec, g_sa.src, err);
         r = safe_area::Rect{0, 0, fb_w, fb_h};
     }
-    g_safe  = !(r.x == 0 && r.y == 0 && r.w == fb_w && r.h == fb_h);
+    g_safe  = !(r.x == 0 && r.y == 0 && r.w == fb_w && r.h == fb_h) || g_sa.v_shift != 0;
     g_sa_sx = (float)r.w / (float)fb_w;
     g_sa_sy = (float)r.h / (float)fb_h;
     g_sa_ox = (float)r.x;
-    g_sa_oy = (float)r.y;
+    g_sa_oy = (float)(r.y - g_sa.v_shift);
     g_sa.full = full ? 1 : 0;
-    logf_("misterglue: safe area %dx%d+%d+%d (\"%s\" from %s; visible %dx%d+%d+%d at %d:%d%s)",
-          r.w, r.h, r.x, r.y, g_sa.spec, g_sa.src, vis.w, vis.h, vis.x, vis.y, g_sa.dar.num, g_sa.dar.den,
+    logf_("misterglue: safe area %dx%d+%d+%d v_shift %d (\"%s\" from %s; visible %dx%d+%d+%d at %d:%d%s)",
+          r.w, r.h, r.x, r.y, g_sa.v_shift, g_sa.spec, g_sa.src, vis.w, vis.h, vis.x, vis.y,
+          g_sa.dar.num, g_sa.dar.den,
           g_bltctrl ? (full ? ", core 240 lines" : ", core short window") : "");
 }
 
@@ -302,9 +304,20 @@ void safe_area_init(int fb_w, int fb_h) {
     const char *cfg = getenv("MISTER_GLUE_SAFE_AREA_FILE");
     const char *spec = getenv("MISTER_GLUE_SAFE_AREA");
     g_sa.src = "MISTER_GLUE_SAFE_AREA";
-    if (read_cfg_safe_area(cfg, cfgval, sizeof cfgval)) { spec = cfgval; g_sa.src = cfg; }
+    if (read_cfg(cfg, "safe_area", cfgval, sizeof cfgval)) { spec = cfgval; g_sa.src = cfg; }
     if (!spec) { spec = "off"; g_sa.src = "default"; }
     snprintf(g_sa.spec, sizeof g_sa.spec, "%s", spec);
+
+    /* v_shift: display.cfg wins over MISTER_GLUE_V_SHIFT, like safe_area. */
+    char shval[64];
+    const char *sh = getenv("MISTER_GLUE_V_SHIFT");
+    if (read_cfg(cfg, "v_shift", shval, sizeof shval)) sh = shval;
+    g_sa.v_shift = 0;
+    if (sh && *sh && !safe_area::parse_shift(sh, &g_sa.v_shift)) {
+        g_sa.v_shift = 0;
+        logf_("misterglue: v_shift \"%s\" ignored (want -%d..%d)", sh, (int)safe_area::kMaxShift,
+              (int)safe_area::kMaxShift);
+    }
 
     const char *ol = getenv("MISTER_GLUE_OSD_LINES");
     if (ol && *ol == '1' && !bltctrl_init())
