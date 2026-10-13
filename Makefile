@@ -62,9 +62,10 @@ vendor-only: $(patsubst %.cpp,$(OUT)/%.o,$(VENDOR_CXX)) $(patsubst %.c,$(OUT)/%.
 
 # Host unit tests (native compiler, no cross toolchain needed).
 HOSTCXX ?= g++
-test: $(OUT)/host/test_godot_shadow $(OUT)/host/test_draw_rewrite
+test: $(OUT)/host/test_godot_shadow $(OUT)/host/test_draw_rewrite $(OUT)/host/test_safe_area
 	$(OUT)/host/test_godot_shadow
 	$(OUT)/host/test_draw_rewrite
+	$(OUT)/host/test_safe_area
 
 $(OUT)/host/test_godot_shadow: $(SRCDIR)/misterglue/test_godot_shadow.cpp \
                                $(SRCDIR)/misterglue/godot_shadow.cpp $(SRCDIR)/misterglue/godot_shadow.h
@@ -79,6 +80,10 @@ $(OUT)/host/test_draw_rewrite: $(SRCDIR)/misterglue/test_draw_rewrite.cpp \
 	$(HOSTCXX) -std=gnu++14 -Wall -Wextra -O2 -I$(VENDOR)/mister -I$(SRCDIR)/misterglue \
 		-o $@ $(SRCDIR)/misterglue/test_draw_rewrite.cpp $(SRCDIR)/misterglue/draw_rewrite.cpp \
 		$(VENDOR)/mister/blitter_raster.cpp -lm -lpthread
+
+$(OUT)/host/test_safe_area: $(SRCDIR)/misterglue/test_safe_area.cpp $(SRCDIR)/misterglue/safe_area.h
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=gnu++14 -Wall -Wextra -O2 -o $@ $<
 
 clean:
 	rm -rf $(OUT)

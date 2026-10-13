@@ -13,6 +13,7 @@ pinned upstream versions below are the source of truth.
 | 0005 | SDL2 2.32.10 | `SDL2-2.32.10/` | `mister` joystick driver — reads the core's DDR joystick words — plus the driver-array exclusivity fix (see below) |
 | 0006 | FRT 2.1.0 | `frt/` | `FRTJOY:` enumeration/button tracing in `sdl2_adapter.h` |
 | 0007 | SDL2 2.32.10 | `SDL2-2.32.10/` | Null GL: with `SDL_MISTER_GLUE` set (and `SDL_MISTER_NULL_GL` not `0`) no EGL/GL library is loaded; GL entry points resolve to the glue over stubs that replay Mesa llvmpipe's GLES2 answers (PLAN.md §1l) |
+| 0008 | Godot 3.5.2 | `godot-3.5.2-stable/` | `MISTER_GODOT_AUTOLOAD="Name=/abs/path.gd"` registers one extra autoload from outside the game's pack (the port's `src/godot/mister_layout.gd`), after the project's own |
 
 Applied in order (0001, 0003, 0004, 0005, 0007) to a pristine `SDL2-2.32.10.tar.gz`, the SDL2
 patches reproduce `work/SDL2-2.32.10/` exactly (checked 2026-09-26).

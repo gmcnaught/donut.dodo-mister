@@ -11,6 +11,7 @@
 #include "mister_glue_abi.h"
 #include "godot_shadow.h"
 #include "draw_rewrite.h"
+#include "safe_area.h"
 
 #include <stdarg.h>
 #include <fcntl.h>
@@ -127,6 +128,18 @@ int      g_vctrl_fd = -1;
 uint32_t g_vframe = 0;
 uint32_t g_vbank  = 0;
 
+/* Safe area (safe_area.h): the rect the finished picture is scaled into, so it
+   fits the lines the core scans out and the display shows. Applied to draws
+   into the default framebuffer only -- on Godot that is the one composite of
+   the viewport render target, so the game itself still renders 320x240.
+   The border is the default framebuffer's clear; when the engine has not
+   cleared it this frame we clear it to black ourselves before the first
+   default-framebuffer draw (the backend emits that fill, since the shrunk
+   composite no longer proves it redundant). */
+bool  g_safe = false;
+float g_sa_sx = 1.0f, g_sa_sy = 1.0f, g_sa_ox = 0.0f, g_sa_oy = 0.0f;
+bool  g_def_cleared = false;   /* the default framebuffer was cleared this frame */
+
 bool vctrl_init(void) {
     g_vctrl_fd = open("/dev/mem", O_RDWR | O_SYNC);
     if (g_vctrl_fd < 0) return false;
@@ -181,6 +194,164 @@ bool surfaces_init(int w, int h) {
     g_surf.def.h = g_surf.app.h = h;
     g_surf.ready = true;
     return true;
+}
+
+/* Read key= from the display.cfg file, if it exists and has one. */
+bool read_cfg(const char *path, const char *key, char *val, size_t val_sz) {
+    if (!path || !*path) return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    char text[4096];
+    size_t n = fread(text, 1, sizeof(text) - 1, f);
+    fclose(f);
+    text[n] = 0;
+    return safe_area::cfg_value(text, key, val, val_sz);
+}
+
+/* Safe-area configuration, resolved once at init; the rect itself is recomputed
+   whenever the core's Vertical Lines mode changes (safe_area_poll). */
+struct SafeAreaCfg {
+    int  fb_w = 0, fb_h = 0;
+    safe_area::Rect window{0, 0, 0, 0};   /* MISTER_GLUE_VISIBLE: the core's short window */
+    safe_area::Ratio dar{0, 0};           /* MISTER_GLUE_DAR: how the core shows the window */
+    char spec[64] = "off";
+    const char *src = "default";
+    int  v_shift = 0;                     /* display.cfg v_shift= / MISTER_GLUE_V_SHIFT */
+    int  osd_up = 0;                      /* OSD Picture Up rows (0: v_shift applies) */
+    int  osd_hud = -1;                    /* OSD HUD Down rows, as last published */
+    int  full = -1;                       /* the mode the rect was last resolved for */
+} g_sa;
+
+/* The core's OSD Vertical Lines mode: C_STATUS (0x3B000030) low32 bit2, written by
+   the fabric every frame (blitter_top S_WR_STATUS). Read-only mapping of the
+   control block's page; cores that predate the option leave the bit 0, which is
+   the short window -- the right answer for them. MISTER_GLUE_OSD_LINES=1 enables. */
+const uint32_t kBltCtrlBase = 0x3B000000u, kCStatusOff = 0x30u, kCStatusVFull = 1u << 2;
+/* Bits 7:3 of the same word carry the OSD HUD Down / Picture Up steps
+   (safe_area::osd_hud_down / osd_picture_up). */
+volatile const uint8_t *g_bltctrl = nullptr;
+int g_bltctrl_fd = -1;
+
+bool bltctrl_init(void) {
+    const char *dev = getenv("MISTER_GLUE_MEMDEV");   /* test hook: a sparse file stands in */
+    g_bltctrl_fd = open(dev && *dev ? dev : "/dev/mem", O_RDONLY | O_SYNC);
+    if (g_bltctrl_fd < 0) return false;
+    void *m = mmap(NULL, 0x1000, PROT_READ, MAP_SHARED, g_bltctrl_fd, kBltCtrlBase);
+    if (m == MAP_FAILED) { close(g_bltctrl_fd); g_bltctrl_fd = -1; return false; }
+    g_bltctrl = (volatile const uint8_t *)m;
+    return true;
+}
+
+void bltctrl_shutdown(void) {
+    if (g_bltctrl) { munmap((void *)g_bltctrl, 0x1000); g_bltctrl = nullptr; }
+    if (g_bltctrl_fd >= 0) { close(g_bltctrl_fd); g_bltctrl_fd = -1; }
+}
+
+/* Resolve the safe area against the window the core scans out in this mode: the
+   whole frame with Vertical Lines = 240, MISTER_GLUE_VISIBLE otherwise. A bad
+   spec is logged and leaves the picture unscaled. */
+void safe_area_set_mode(bool full) {
+    const int fb_w = g_sa.fb_w, fb_h = g_sa.fb_h;
+    const safe_area::Rect vis = full ? safe_area::Rect{0, 0, fb_w, fb_h} : g_sa.window;
+    safe_area::Rect r;
+    const char *err = nullptr;
+    if (!safe_area::resolve(g_sa.spec, fb_w, fb_h, vis, g_sa.dar, &r, &err)) {
+        logf_("misterglue: safe area \"%s\" (%s) ignored: %s", g_sa.spec, g_sa.src, err);
+        r = safe_area::Rect{0, 0, fb_w, fb_h};
+    }
+    const int shift = g_sa.osd_up ? g_sa.osd_up : g_sa.v_shift;   /* a non-zero OSD step wins */
+    g_safe  = !(r.x == 0 && r.y == 0 && r.w == fb_w && r.h == fb_h) || shift != 0;
+    g_sa_sx = (float)r.w / (float)fb_w;
+    g_sa_sy = (float)r.h / (float)fb_h;
+    g_sa_ox = (float)r.x;
+    g_sa_oy = (float)(r.y - shift);
+    g_sa.full = full ? 1 : 0;
+    logf_("misterglue: safe area %dx%d+%d+%d v_shift %d%s (\"%s\" from %s; visible %dx%d+%d+%d at %d:%d%s)",
+          r.w, r.h, r.x, r.y, shift, g_sa.osd_up ? " (OSD Picture Up)" : "", g_sa.spec, g_sa.src, vis.w, vis.h, vis.x, vis.y,
+          g_sa.dar.num, g_sa.dar.den,
+          g_bltctrl ? (full ? ", core 240 lines" : ", core short window") : "");
+}
+
+/* Once per frame, between frames: follow the OSD Vertical Lines option live. */
+void safe_area_poll(void) {
+    if (!g_bltctrl) return;
+    const uint32_t st = *(volatile const uint32_t *)(g_bltctrl + kCStatusOff);
+    const int full = (st & kCStatusVFull) ? 1 : 0;
+    const int up = safe_area::osd_picture_up(st);
+    if (full != g_sa.full || up != g_sa.osd_up) {
+        g_sa.osd_up = up;
+        safe_area_set_mode(full);
+    }
+    /* HUD Down is applied by the port's GDScript (src/godot/mister_layout.gd),
+       which runs on this same main thread and reads it with OS.get_environment. */
+    const int hud = safe_area::osd_hud_down(st);
+    if (hud != g_sa.osd_hud) {
+        char v[8];
+        snprintf(v, sizeof v, "%d", hud);
+        setenv("MISTER_HUD_OFFSET_OSD", v, 1);
+        g_sa.osd_hud = hud;
+        logf_("misterglue: OSD HUD Down %d", hud);
+    }
+}
+
+/* MISTER_GLUE_VISIBLE: the window the core scans out (default: the whole frame).
+   MISTER_GLUE_DAR: the display aspect the core shows that window at, in either
+   Vertical Lines mode (the RBF's video_freak ARX:ARY; default: fb_w:fb_h).
+   Safe area: display.cfg's safe_area= (MISTER_GLUE_SAFE_AREA_FILE) wins over
+   MISTER_GLUE_SAFE_AREA, so the user's file overrides the port's default. */
+void safe_area_init(int fb_w, int fb_h) {
+    g_sa.fb_w = fb_w;
+    g_sa.fb_h = fb_h;
+    g_sa.window = safe_area::Rect{0, 0, fb_w, fb_h};
+    const char *ve = getenv("MISTER_GLUE_VISIBLE");
+    bool has_pos = false;
+    if (ve && *ve) {
+        safe_area::Rect v;
+        if (safe_area::parse_geometry(ve, &v, &has_pos) && has_pos && safe_area::rect_in(v, fb_w, fb_h))
+            g_sa.window = v;
+        else
+            logf_("misterglue: MISTER_GLUE_VISIBLE=\"%s\" ignored (want WxH+X+Y inside %dx%d)", ve, fb_w, fb_h);
+    }
+    g_sa.dar = safe_area::Ratio{fb_w, fb_h};
+    const char *de = getenv("MISTER_GLUE_DAR");
+    if (de && *de && !safe_area::parse_ratio(de, &g_sa.dar)) {
+        g_sa.dar = safe_area::Ratio{fb_w, fb_h};
+        logf_("misterglue: MISTER_GLUE_DAR=\"%s\" ignored (want W:H)", de);
+    }
+
+    char cfgval[64];
+    const char *cfg = getenv("MISTER_GLUE_SAFE_AREA_FILE");
+    const char *spec = getenv("MISTER_GLUE_SAFE_AREA");
+    g_sa.src = "MISTER_GLUE_SAFE_AREA";
+    if (read_cfg(cfg, "safe_area", cfgval, sizeof cfgval)) { spec = cfgval; g_sa.src = cfg; }
+    if (!spec) { spec = "off"; g_sa.src = "default"; }
+    snprintf(g_sa.spec, sizeof g_sa.spec, "%s", spec);
+
+    /* v_shift: display.cfg wins over MISTER_GLUE_V_SHIFT, like safe_area. */
+    char shval[64];
+    const char *sh = getenv("MISTER_GLUE_V_SHIFT");
+    if (read_cfg(cfg, "v_shift", shval, sizeof shval)) sh = shval;
+    g_sa.v_shift = 0;
+    if (sh && *sh && !safe_area::parse_shift(sh, &g_sa.v_shift)) {
+        g_sa.v_shift = 0;
+        logf_("misterglue: v_shift \"%s\" ignored (want -%d..%d)", sh, (int)safe_area::kMaxShift,
+              (int)safe_area::kMaxShift);
+    }
+
+    const char *ol = getenv("MISTER_GLUE_OSD_LINES");
+    if (ol && *ol == '1' && !bltctrl_init())
+        logf_("misterglue: core Vertical Lines unreadable (need /dev/mem); using MISTER_GLUE_VISIBLE");
+    g_sa.full = -1;
+    if (g_bltctrl) safe_area_poll();
+    else safe_area_set_mode(false);
+}
+
+/* Map a default-framebuffer draw from frame coordinates into the safe area. */
+void safe_area_apply(gs::DecodedDraw &d) {
+    for (int i = 0; i < d.tris * 3; i++) {
+        d.verts[i].x = g_sa_ox + d.verts[i].x * g_sa_sx;
+        d.verts[i].y = g_sa_oy + d.verts[i].y * g_sa_sy;
+    }
 }
 
 void dump_surface(const RSurface *s, const char *path) {
@@ -342,8 +513,12 @@ void w_Clear(unsigned mask) {
         bool is_def = gs::target_is_default();
         bool is_app = gs::app_surface(&as_fbo, nullptr) && !is_def && gs::bound_fbo() == as_fbo;
         if (is_def || is_app) {
+            if (is_def) g_def_cleared = true;
             uint8_t r, gg, b, a;
             gs::get_clear_color(&r, &gg, &b, &a);
+            /* With a safe area the screen clear is the visible border: keep it
+               black whatever the engine's clear colour (Godot defaults to grey). */
+            if (is_def && g_safe) r = gg = b = 0;
             RSurface dst{};
             dst.w = host.scanout_w;
             dst.h = host.scanout_h;
@@ -380,9 +555,23 @@ void dispatch_decoded(const gs::DecodedDraw &decoded) {
         logf_("misterglue: app surface = fbo %u tex %u", as_fbo, as_tex);
     }
 
+    gs::DecodedDraw d = decoded;
+    /* Safe area first: the rewrites below then see the remapped vertices, so a
+       full-screen solid quad no longer covers the target and is not turned into
+       a FILL over the black border. */
+    if (g_safe && d.to_default_fb) {
+        if (!g_def_cleared) {
+            RSurface def{};
+            def.w = host.scanout_w;
+            def.h = host.scanout_h;
+            g_backend->clear(g_sw_surfaces ? &g_surf.def : &def, 0, 0, 0, 255);
+            g_def_cleared = true;
+        }
+        safe_area_apply(d);
+    }
+
     /* Same pixels, fewer fabric cycles (draw_rewrite.h): a full-target solid
        quad becomes a FILL, a large rotated sprite samples an upright copy. */
-    gs::DecodedDraw d = decoded;
     {
         uint8_t c[4];
         if ((g_rewrite & RW_FILL) && dr::solid_cover(d, host.scanout_w, host.scanout_h, c)) {
@@ -577,6 +766,7 @@ int glue_init(const MisterGlueHost *h) {
         logf_("misterglue: fabric ON, backend=%s, scanout %dx%d",
               g_backend ? g_backend->name : "none", host.scanout_w, host.scanout_h);
         if (!g_backend) { g_fabric = false; return -1; }
+        safe_area_init(host.scanout_w, host.scanout_h);
     } else {
         logf_("misterglue: shadow-only (set MISTER_GLUE_FABRIC=1 to drive the fabric)");
     }
@@ -588,6 +778,7 @@ int glue_init(const MisterGlueHost *h) {
 void glue_shutdown() {
     if (!g_inited) return;
     vctrl_shutdown();
+    bltctrl_shutdown();
     gs::shutdown();
     g_inited = false;
 }
@@ -615,6 +806,8 @@ int glue_present() {
         }
         g_backend->frame_begin();
         dr::frame_end();
+        g_def_cleared = false;
+        safe_area_poll();     /* between frames: the next frame uses the new rect whole */
         vctrl_publish();   /* tell the scanout reader a new frame is ready */
         pace_frame();
     }

@@ -1,0 +1,18 @@
+--- a/main/main.cpp	2023-03-06 09:13:41
++++ b/main/main.cpp	2026-10-12 21:19:31
+@@ -937,6 +937,15 @@
+ #ifdef TOOLS_ENABLED
+ 		found_project = true;
+ #endif
++		// [MiSTer port] MISTER_GODOT_AUTOLOAD="Name=/abs/path.gd": one extra autoload
++		// from outside the game's pack (a port-owned script), registered after the
++		// project's own so their singletons already exist when it runs.
++		String mister_autoload = OS::get_singleton()->get_environment("MISTER_GODOT_AUTOLOAD");
++		int mister_eq = mister_autoload.find("=");
++		if (mister_eq > 0 && mister_eq < mister_autoload.length() - 1) {
++			globals->set("autoload/" + mister_autoload.substr(0, mister_eq),
++					mister_autoload.substr(mister_eq + 1, mister_autoload.length() - mister_eq - 1));
++		}
+ 	} else {
+ #ifdef TOOLS_ENABLED
+ 		editor = false;

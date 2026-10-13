@@ -4,7 +4,7 @@
 # Output: build/release/DonutDodo-MiSTer-<tag>.zip (+ games/DonutDodo/sha256sums.txt inside)
 #
 # Inputs, all built from this repo's sources and pins (README.md "Building"):
-#   ENGINE   FRT 2.1.0 / Godot 3.5.2 armhf template, pruned (scripts/build_engine.sh; patches 0002, 0006)
+#   ENGINE   FRT 2.1.0 / Godot 3.5.2 armhf template, pruned (scripts/build_engine.sh; patches 0002, 0006, 0008)
 #   SDL2     SDL2 2.32.10 + patches 0001, 0003-0005, 0007 (null GL: no Mesa ships)
 #   GLUE     libmisterglue.so, rebuilt here from src/ (make, armhf image)
 #   HOOK_BIN MiSTer_hybrid, the main= hook (platform CI artifact, or
@@ -47,6 +47,7 @@ G=$OUT/games/DonutDodo
 rm -rf "$OUT"; mkdir -p "$OUT/_Other" "$G/libs" "$G/gamedata"
 python3 "$PLAT/tools/mister_platform.py" render "$ROOT/mister-port.toml" --out "$OUT" --hook-binary "$HOOK_BIN"
 cp "$ROOT/dist/README.md" "$G/README.md"
+mkdir -p "$G/port" && cp "$ROOT/src/godot/mister_layout.gd" "$G/port/"
 cp "$ROOT/LICENSE" "$ROOT/LICENSING.md" "$G/"
 docker run --rm -v "$(dirname "$ENGINE")":/i:ro -v "$G":/o "$IMAGE" \
 	arm-linux-gnueabihf-strip -o /o/frt_3.5.2 "/i/$(basename "$ENGINE")"

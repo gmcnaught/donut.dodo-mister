@@ -48,9 +48,47 @@ top face = Options. The D-pad moves.
 
 A mapping you saved for this core earlier (`config/inputs/DonutDodo_input_*.map`) takes precedence over the default.
 
+## Picture size
+
+**OSD → Vertical Lines** sets how many of the game's 240 lines the core sends to the display:
+
+- **240** (default): the whole picture, pixel for pixel. Best for HDMI. A CRT shows it like any 240-line console and
+  hides a few lines at the top and bottom.
+- **224**: the Genesis-style window, the lines a consumer CRT shows. The game is scaled into those 224 lines so nothing
+  is cut off; fine detail is a little uneven because 240 rows are drawn into 224 lines.
+
+The change takes effect immediately. If the edges are still cut off (a CRT, or a TV that overscans), create
+`games/DonutDodo/display.cfg` with one line, then restart the game:
+
+    safe_area = crt
+
+| Value | Picture |
+|---|---|
+| `fit` (default) | The whole game in the lines the core shows, at the right shape: pixel for pixel at 240; the full 224-line window at 224 |
+| `crt` | 90% of `fit` with a black border, for a CRT that hides the edges of the picture (same as `90%`) |
+| `NN%` | `fit` scaled to NN% (1–100), e.g. `85%` for a CRT with a lot of overscan |
+| `off` | Unscaled, pixel for pixel: at Vertical Lines 224 the top 7 and bottom 9 lines are not shown |
+| `WxH` or `WxH+X+Y` | An exact size (and position) in the game's 320×240 pixels, e.g. `288x216` |
+
+For a CRT that hides the top and bottom of the 240-line picture, two OSD options move things without scaling
+anything. Both start at +0 and take effect immediately:
+
+- **OSD → HUD Down** (+0, +4, +8, +12) moves the score bar down that many rows (the black bar behind it stays), clear
+  of the top edge. +8 puts the labels where the scores were; the scores then overlap the top corners of the level.
+- **OSD → Picture Up** (+0 … +16) moves the whole picture up that many rows, bringing the bottom floor into view.
+  The rows it vacates at the bottom are black. Together with **V Position** this sets where the picture sits on the
+  tube. HUD Down +8 with Picture Up +4 suits a typical consumer set.
+
+With an option at +0, `display.cfg` can still set the same thing: `hud_offset = N` and `v_shift = N` (−16…16; a
+negative `v_shift` moves the picture down).
+
+The sizes follow the Vertical Lines option (`crt` is 90% of whichever window the core shows). Any scaled setting is a
+little softer than pixel for pixel on fine pixel art, because 240 lines are drawn into fewer. The setting
+in use is logged at start-up in `donutdodo.log` (`misterglue: safe area ...`). An invalid value is logged and the
+picture is shown unscaled. The file is yours: installing a new release does not replace it.
+
 ## Notes
 
-- The core shows the 224 lines a CRT displays (rows 7–230 of the game's 240).
 - Saves and settings go to `games/DonutDodo/conf/`.
 - Logs: `/media/fat/logs/DonutDodo/` (`launch.log`, `donutdodo.log`, and `donutdodo.prev.log` from the previous run).
 - `platform/mem_wc/mem_wc-<kernel>.ko` gives the blitter a faster (write-combining) DDR mapping. It is loaded only if it matches the
